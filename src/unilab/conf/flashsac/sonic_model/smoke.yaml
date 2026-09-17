@@ -1,0 +1,15 @@
+# @package algo.sonic.model
+# Same encoder -> FSQ -> decoder topology as release, with smaller widths.
+num_future_frames: 1
+num_tokens: 1
+token_dim: 8
+fsq_levels: 16
+g1_frame_dim: 64
+smpl_frame_dim: 84
+action_dim: 29
+actor_hidden_dim: 128
+critic_hidden_dim: 128
+g1_encoder_hidden_dims: [256, 128]
+smpl_encoder_hidden_dims: [256, 128]
+g1_motion_decoder_hidden_dims: [256, 128]
+g1_control_decoder_hidden_dims: [512, 256]

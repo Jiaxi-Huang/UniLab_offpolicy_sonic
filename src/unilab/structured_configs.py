@@ -72,6 +72,13 @@ class FlashSACAlgoParams:
     actor_num_blocks: int = 2
     critic_num_blocks: int = 2
     actor_bc_alpha: float = 0.0
+    # "replay" BCs against the replayed actions (legacy regularizer);
+    # "reference" BCs against the motion-reference joints reachable from the
+    # packed next observation (SONIC learners only).
+    actor_bc_target: str = "replay"
+    # Optional linear anneal endpoint for actor_bc_alpha over
+    # learning_rate_decay_steps actor updates; None keeps the weight constant.
+    actor_bc_alpha_end: Optional[float] = None
     actor_noise_zeta_mu: float = 2.0
     actor_noise_zeta_max: int = 16
     critic_min_v: float = -5.0
@@ -114,7 +121,6 @@ class FlashSACConfig(BaseConfig):
     critic_hidden_dim: int = 256
     num_atoms: int = 101
     obs_normalization: bool = False
-    use_layer_norm: bool = False
     algo_params: FlashSACAlgoParams = field(default_factory=FlashSACAlgoParams)
 
 

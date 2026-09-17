@@ -1,0 +1,225 @@
+# @package _global_
+# MuJoCo owner for the released SONIC G1+SMPL observation/model contract.
+training:
+  task_name: G1SonicManager
+  sim_backend: mujoco
+  play_env_num: 1
+  play_steps: 800
+  # Overlay a translucent reference-motion ghost robot next to the policy
+  # rollout in playback videos (MuJoCo-rendered backends only).
+  play_motion_ghost: false
+  export_onnx: false
+algo:
+  # Full release architecture is selected by the root sonic_model default.
+  # Use `sonic_model=smoke` for a lightweight contract/training check.
+  max_iterations: 500000
+  save_interval: 50000
+  num_envs: 2048
+  batch_size: 2048
+  replay_buffer_n: 1024
+  learning_starts: 24
+  updates_per_step: 2
+  policy_frequency: 2
+  gamma: 0.99
+  tau: 0.01
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+  num_atoms: 101
+  obs_normalization: false
+  algo_params:
+    normalize_reward: true
+    normalized_g_max: 5.0
+    actor_num_blocks: 2
+    critic_num_blocks: 2
+    actor_bc_alpha: 0.0
+    # "replay" = BC against replayed actions; "reference" = BC against the
+    # motion-reference joints packed in the next observation (SONIC only).
+    actor_bc_target: replay
+    # Optional linear anneal endpoint of actor_bc_alpha; null keeps it constant.
+    actor_bc_alpha_end: null
+    actor_noise_zeta_mu: 2.0
+    actor_noise_zeta_max: 16
+    critic_min_v: -5.0
+    critic_max_v: 5.0
+    temp_initial_value: 0.01
+    temp_target_sigma: 0.15
+    temp_target_entropy: null
+    log_std_min: -10.0
+    log_std_max: 2.0
+    learning_rate_init: 3.0e-4
+    learning_rate_peak: 3.0e-4
+    learning_rate_end: 1.5e-4
+    learning_rate_warmup_steps: 0
+    learning_rate_decay_steps: 150000
+    n_step: 1
+    amp_dtype: auto
+    use_compile: true
+    compile_full_objectives: true
+    use_cuda_graph_critic: false
+    use_cuda_graph_actor: false
+    use_cuda_graph_critic_packed_staging: false
+    use_cuda_graph_actor_packed_staging: false
+  sonic:
+    enabled: true
+    checkpoint_format: auto
+    auxiliary:
+      reconstruction: 0.01
+      latent_alignment: 1.0
+      cycle_consistency: 1.0
+env:
+  scene:
+    model_file: src/unilab/assets/robots/g1/scene_flat.xml
+    fragment_files: [src/unilab/assets/robots/g1/sonic_undesired_contacts.xml]
+    default_keyframe_name: stand
+    entities:
+      robot:
+        root_body_name: pelvis
+        joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint, right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint, waist_yaw_joint, waist_roll_joint, waist_pitch_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint, left_wrist_roll_joint, left_wrist_pitch_joint, left_wrist_yaw_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint, right_wrist_roll_joint, right_wrist_pitch_joint, right_wrist_yaw_joint]
+        actuator_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint, right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint, waist_yaw_joint, waist_roll_joint, waist_pitch_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint, left_wrist_roll_joint, left_wrist_pitch_joint, left_wrist_yaw_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint, right_wrist_roll_joint, right_wrist_pitch_joint, right_wrist_yaw_joint]
+        body_names: [pelvis, left_hip_roll_link, left_knee_link, left_ankle_roll_link, right_hip_roll_link, right_knee_link, right_ankle_roll_link, torso_link, left_shoulder_roll_link, left_elbow_link, left_wrist_yaw_link, right_shoulder_roll_link, right_elbow_link, right_wrist_yaw_link]
+  sim_dt: 0.005
+  ctrl_dt: 0.02
+  max_episode_seconds: 10.0
+  commands:
+    motion:
+      _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicMotionCommandCfg
+      entity_name: robot
+      resampling_time_range: [1.0e9, 1.0e9]
+      params:
+        motion_file: data/sonic/robot_filtered
+        smpl_motion_file: data/sonic/smpl_filtered
+        motion_store_file: data/sonic/packed
+        anchor_body_name: pelvis
+        body_names: [pelvis, left_hip_roll_link, left_knee_link, left_ankle_roll_link, right_hip_roll_link, right_knee_link, right_ankle_roll_link, torso_link, left_shoulder_roll_link, left_elbow_link, left_wrist_yaw_link, right_shoulder_roll_link, right_elbow_link, right_wrist_yaw_link]
+        ee_body_names: [left_ankle_roll_link, right_ankle_roll_link, left_wrist_yaw_link, right_wrist_yaw_link]
+        # Must stay aligned with algo.sonic.model.num_future_frames.
+        num_future_frames: ${algo.sonic.model.num_future_frames}
+        sampling_mode: adaptive
+        sampling_start_ratio: 0.0
+        adaptive_lambda: 0.8
+        # Smooth neighboring motion bins so adaptive_lambda is active instead
+        # of being a no-op (kernel_size=1 disables the decay kernel).
+        adaptive_kernel_size: 3
+        adaptive_uniform_ratio: 0.2
+        adaptive_alpha: 0.001
+        # SONIC uses the cumulative failure-rate statistic; adaptive_alpha is
+        # kept for the legacy "ema" statistic and has no effect here.
+        adaptive_failure_stat: cumulative
+        # Laplace pseudo-count: unvisited bins start at rate 1.0 and the
+        # prior dilutes at 1/(N+1) per visit.
+        adaptive_failure_prior: 1.0
+        adaptive_pre_failure_window: 200
+        adaptive_failure_rate_max_over_mean: 200.0
+        # Recompute the adaptive distribution every N collector steps. Set to
+        # 1 for strict per-reset refresh compatibility.
+        adaptive_sampling_update_interval: 200
+        # Success episodes stamp every bin they traversed ("trajectory"),
+        # restoring within-clip failure-rate contrast; "episode_end" keeps the
+        # legacy end-frame attribution for A/B comparison.
+        adaptive_attribution: trajectory
+        # Cap each clip's total sampling mass at N x uniform clip share so a
+        # single hard clip cannot monopolize training once attribution
+        # differentiates bins.
+        adaptive_max_prob_per_motion: 30
+        truncate_on_clip_end: false
+        encoder_sampling: mixed
+        anchor_pos_z_threshold: 0.15
+        anchor_ori_threshold: 0.2
+        ee_body_pos_z_threshold: 0.15
+        low_reference_height_threshold: 0.5
+        low_reference_anchor_pos_z_threshold: 0.75
+        low_reference_ee_body_pos_z_threshold: 0.75
+        foot_pos_threshold: 0.2
+        pose_range:
+          x: [-0.05, 0.05]
+          y: [-0.05, 0.05]
+          z: [-0.01, 0.01]
+          roll: [-0.1, 0.1]
+          pitch: [-0.1, 0.1]
+          yaw: [-0.2, 0.2]
+        velocity_range:
+          x: [-0.5, 0.5]
+          y: [-0.5, 0.5]
+          z: [-0.2, 0.2]
+          roll: [-0.52, 0.52]
+          pitch: [-0.52, 0.52]
+          yaw: [-0.78, 0.78]
+        joint_position_range: [-0.1, 0.1]
+        joint_default_position_range: [0.0, 0.0]
+        joint_velocity_range: [0.0, 0.0]
+        reward_point_body_names: [pelvis, left_wrist_yaw_link, right_wrist_yaw_link, left_ankle_roll_link, right_ankle_roll_link]
+        reward_point_body_offsets: [[0.0, 0.0, 0.0], [0.18, -0.025, 0.0], [0.18, 0.025, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+  actions:
+    joint_pos:
+      _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicJointPositionActionCfg
+      entity_name: robot
+      actuator_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint, right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint, waist_yaw_joint, waist_roll_joint, waist_pitch_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint, left_wrist_roll_joint, left_wrist_pitch_joint, left_wrist_yaw_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint, right_wrist_roll_joint, right_wrist_pitch_joint, right_wrist_yaw_joint]
+      # Training follows the canonical G1 FlashSAC/FastSAC action contract.
+      scale: 2.0
+      # Official SONIC per-joint action scale, in the policy joint order above.
+      #scale: [0.3506614664, 0.3506614664, 0.5475464652, 0.3506614664, 0.3506614664, 0.4385773139, 0.5475464652, 0.5475464652, 0.4385773139, 0.3506614664, 0.3506614664, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.0745008703, 0.0745008703, 0.0745008703, 0.0745008703]
+      #scale: [2.8600511551, 2.8600511551, 1.7851017714, 3.2471308708, 3.2471308708, 0.5719999075, 3.0333602428, 3.0333602428, 0.5719999075, 2.4318797588, 2.4318797588, 2.1928865696, 2.1928865696, 0.9752599001, 0.9752599001, 1.7190008163, 1.7190008163, 0.4385773242, 0.4385773242, 2.5951428413, 2.5951428413, 1.8119199276, 1.8119199276, 2.1694419384, 2.1694419384, 0.3725043516, 0.3725043516, 0.3725043516, 0.3725043516]
+      simulate_action_latency: false
+      use_default_offset: true
+  observations:
+    policy:
+      _target_: unilab.managers.ObservationGroupCfg
+      terms:
+        obs:
+          _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicObservationTermCfg
+          func: unilab.tasks.motion_tracking.g1.sonic_manager.SonicActorObservation
+          sonic_history_length: ${algo.sonic.model.num_future_frames}
+        g1_reference: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_g1_reference}
+        smpl_reference: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_smpl_reference}
+        encoder_index: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_encoder_index}
+    critic:
+      _target_: unilab.managers.ObservationGroupCfg
+      terms:
+        obs:
+          _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicObservationTermCfg
+          func: unilab.tasks.motion_tracking.g1.sonic_manager.SonicCriticObservation
+          sonic_history_length: ${algo.sonic.model.num_future_frames}
+  events:
+    reset_reference: {_target_: unilab.managers.EventTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.reset_sonic_reference, mode: reset}
+    actuator_gains: {_target_: unilab.managers.EventTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.SonicActuatorDynamics, mode: reset}
+    base_mass:
+      _target_: unilab.managers.EventTermCfg
+      func: unilab.envs.mdp.randomize_rigid_body_mass
+      mode: reset
+      #params: {asset_cfg: {_target_: unilab.managers.SceneEntityCfg, name: robot, body_names: [torso_link, left_wrist_yaw_link, right_wrist_yaw_link]}, mass_distribution_params: [0.8, 2.5], operation: scale, recompute_inertia: false}
+      params: {asset_cfg: {_target_: unilab.managers.SceneEntityCfg, name: robot, body_names: pelvis}, mass_distribution_params: [-1.0, 1.0], operation: add, recompute_inertia: false}
+    base_com:
+      _target_: unilab.managers.EventTermCfg
+      func: unilab.envs.mdp.randomize_rigid_body_com
+      mode: reset
+      #params: {asset_cfg: {_target_: unilab.managers.SceneEntityCfg, name: robot, body_names: torso_link}, com_range: {x: [-0.025, 0.025], y: [-0.05, 0.05], z: [-0.05, 0.05]}}
+      params: {asset_cfg: {_target_: unilab.managers.SceneEntityCfg, name: robot, body_names: pelvis}, com_range: {x: [-0.05, 0.05], y: [-0.05, 0.05], z: [-0.05, 0.05]}}   
+    encoder_bias:
+      _target_: unilab.managers.EventTermCfg
+      func: unilab.tasks.motion_tracking.g1.manager_terms.randomize_encoder_bias
+      mode: reset
+      params: {bias_range: [-0.01, 0.01], asset_cfg: {_target_: unilab.managers.SceneEntityCfg, name: robot, joint_names: ".*"}}
+  terminations:
+    anchor_pos_z: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_anchor_pos_z_termination}
+    anchor_ori: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_anchor_ori_termination}
+    ee_body_pos_z: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_ee_body_pos_z_termination}
+    feet_pos: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_feet_pos_termination}
+    time_out: {_target_: unilab.managers.TerminationTermCfg, func: unilab.envs.mdp.time_out, time_out: true}
+    #clip_end: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_clip_end, time_out: true}
+    clip_end: null
+  policy_observation_group: policy
+  critic_observation_group: critic
+  scale_rewards_by_dt: true
+reward:
+  motion_global_root_pos: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: 0.5, params: {term_name: motion_global_root_pos, std: 0.3}}
+  motion_global_root_ori: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: 0.5, params: {term_name: motion_global_root_ori, std: 0.4}}
+  motion_body_pos: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: 1.0, params: {term_name: motion_body_pos, std: 0.3}}
+  motion_body_ori: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: 1.0, params: {term_name: motion_body_ori, std: 0.4}}
+  motion_body_lin_vel: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: 1.0, params: {term_name: motion_body_lin_vel, std: 1.0}}
+  motion_body_ang_vel: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: 1.0, params: {term_name: motion_body_ang_vel, std: 3.14}}
+  tracking_vr_5point_local: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: 2.0, params: {term_name: tracking_vr_5point_local, std: 0.1}}
+  action_rate_l2: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: -0.1, params: {term_name: action_rate_l2}}
+  joint_limit: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: -10.0, params: {term_name: joint_limit}}
+  undesired_contacts: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: -0.1, params: {term_name: undesired_contacts}}
+  anti_shake: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: -0.005, params: {term_name: anti_shake}}
+  feet_acc: {_target_: unilab.managers.RewardTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_reward, weight: -0.0000025, params: {term_name: feet_acc}}

@@ -172,6 +172,7 @@ class MotionCommand(CommandTerm):
             name="MotionCommand joint_default_position_range",
         )
 
+
         num_bodies = len(cfg.body_names)
         num_joints = self.motion.num_joints
         dtype = self.motion.joint_pos.dtype
@@ -221,6 +222,13 @@ class MotionCommand(CommandTerm):
             "sampling_entropy",
             "sampling_top1_prob",
             "sampling_top1_bin",
+            "sampling_effective_bin_count",
+            "sampling_visited_bin_fraction",
+            "sampling_failure_rate_mean",
+            "sampling_failure_rate_max",
+            "sampling_failure_count_total",
+            "sampling_visit_count_total",
+            "sampling_uniform_mass_actual",
         ):
             self.metrics[name] = np.zeros(self.num_envs, dtype=dtype)
         self._refresh_motion()
@@ -237,7 +245,11 @@ class MotionCommand(CommandTerm):
         body_indices: np.ndarray,
     ) -> MotionLoader:
         """Materialize the profile-owned motion loader on the cold path."""
-        return MotionLoader(motion_file, body_indices=body_indices)
+        return MotionLoader(
+            motion_file,
+            body_indices=body_indices,
+            target_joint_names=tuple(self.robot.joint_names),
+        )
 
     @staticmethod
     def _validate_cfg(cfg: MotionCommandCfg) -> None:
@@ -257,6 +269,18 @@ class MotionCommand(CommandTerm):
             )
         if not 0.0 <= cfg.params.sampling_start_ratio <= 1.0:
             raise ValueError("MotionCommandCfg sampling_start_ratio must be within [0, 1]")
+        if cfg.sampling_mode != "mixed" and cfg.params.sampling_start_ratio != 0.0:
+            raise ValueError(
+                "MotionCommandCfg sampling_start_ratio is only effective when sampling_mode='mixed'"
+            )
+        if not np.isfinite(cfg.params.adaptive_lambda) or not 0.0 < cfg.params.adaptive_lambda <= 1.0:
+            raise ValueError("MotionCommandCfg adaptive_lambda must be finite and within (0, 1]")
+        if cfg.params.adaptive_kernel_size < 1:
+            raise ValueError("MotionCommandCfg adaptive_kernel_size must be positive")
+        if not 0.0 <= cfg.params.adaptive_uniform_ratio <= 1.0:
+            raise ValueError("MotionCommandCfg adaptive_uniform_ratio must be within [0, 1]")
+        if not 0.0 < cfg.params.adaptive_alpha <= 1.0:
+            raise ValueError("MotionCommandCfg adaptive_alpha must be within (0, 1]")
         if not isinstance(cfg.params.truncate_on_clip_end, bool):
             raise TypeError("MotionCommandCfg truncate_on_clip_end must be bool")
 
@@ -477,6 +501,48 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_entropy"].fill(self.sampler.sampling_entropy)
         self.metrics["sampling_top1_prob"].fill(self.sampler.sampling_top1_prob)
         self.metrics["sampling_top1_bin"].fill(self.sampler.sampling_top1_bin)
+        self.metrics["sampling_effective_bin_count"].fill(
+            self.sampler.sampling_effective_bin_count
+        )
+        self.metrics["sampling_visited_bin_fraction"].fill(
+            self.sampler.sampling_visited_bin_fraction
+        )
+        self.metrics["sampling_failure_rate_mean"].fill(self.sampler.sampling_failure_rate_mean)
+        self.metrics["sampling_failure_rate_max"].fill(self.sampler.sampling_failure_rate_max)
+        self.metrics["sampling_failure_count_total"].fill(
+            self.sampler.sampling_failure_count_total
+        )
+        self.metrics["sampling_visit_count_total"].fill(self.sampler.sampling_visit_count_total)
+        self.metrics["sampling_uniform_mass_actual"].fill(
+            self.sampler.sampling_uniform_mass_actual
+        )
+
+    def get_diagnostics(
+        self, *, include_histograms: bool = False
+    ) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+        """Expose sampler summaries and distributions to off-policy loggers."""
+        sampler = self.sampler
+        histograms = {
+            "sampling_failure_rate": sampler.bin_failure_rate.copy(),
+            "sampling_probability": sampler._sampling_probs.copy(),
+            "sampling_visit_count": sampler.bin_visit_count.copy(),
+            "sampling_failure_count": sampler.bin_failed_count.copy(),
+        } if include_histograms else {}
+        return (
+            {
+                "sampling_entropy": sampler.sampling_entropy,
+                "sampling_top1_prob": sampler.sampling_top1_prob,
+                "sampling_top1_bin": sampler.sampling_top1_bin,
+                "sampling_effective_bin_count": sampler.sampling_effective_bin_count,
+                "sampling_visited_bin_fraction": sampler.sampling_visited_bin_fraction,
+                "sampling_failure_rate_mean": sampler.sampling_failure_rate_mean,
+                "sampling_failure_rate_max": sampler.sampling_failure_rate_max,
+                "sampling_failure_count_total": sampler.sampling_failure_count_total,
+                "sampling_visit_count_total": sampler.sampling_visit_count_total,
+                "sampling_uniform_mass_actual": sampler.sampling_uniform_mass_actual,
+            },
+            histograms,
+        )
 
     def _update_error_metrics(self, rows: np.ndarray) -> None:
         """Recompute the row-wise error metrics for the given rows.
@@ -571,7 +637,10 @@ class MotionCommand(CommandTerm):
                 self._refresh_motion(env_ids)
             return
         self._resample_ingested_ids = None
-        self.sampler.update_failure_stats(self._env.termination_manager.terminated)
+        self.sampler.update_failure_stats(
+            self._env.termination_manager.terminated,
+            episode_done=self._env.reset_buf,
+        )
         active_ids = np.flatnonzero(~self._env.reset_buf).astype(np.int32, copy=False)
         wrap_ids = self.sampler.step(active_ids)
         if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:

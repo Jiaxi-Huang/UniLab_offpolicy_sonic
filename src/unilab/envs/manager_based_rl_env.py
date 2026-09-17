@@ -595,6 +595,11 @@ class ManagerBasedRlEnv(NpEnv):
         if self._reset_state.last_commit_had_writes:
             self.scene._invalidate_state_reads()
         self.command_manager.post_compute()
+        command_diagnostics, _ = self.command_manager.get_diagnostics()
+        if command_diagnostics:
+            state.info["adaptive_sampling"] = {
+                "scalars": command_diagnostics,
+            }
 
         manager_obs = self.observation_manager.compute(update_history=True)
 

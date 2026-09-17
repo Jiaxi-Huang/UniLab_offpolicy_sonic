@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -148,7 +150,12 @@ def interpolate_motion(
 class MotionLoader:
     """Loads and provides access to motion data from NPZ files."""
 
-    def __init__(self, motion_file: str | Sequence[str], body_indices: np.ndarray | None = None):
+    def __init__(
+        self,
+        motion_file: str | Sequence[str],
+        body_indices: np.ndarray | None = None,
+        target_joint_names: Sequence[str] | None = None,
+    ):
         """Initialize motion loader.
 
         Args:
@@ -158,6 +165,18 @@ class MotionLoader:
                 indices are expected to follow that convention.
         """
         motion_file = resolve_motion_files(motion_file)
+        if isinstance(motion_file, str) and Path(motion_file).is_dir():
+            # A directory containing manifest.json is the versioned packed
+            # contract.  Plain NPZ directories (for example robot_filtered)
+            # remain a valid cold-path input for manager tasks that do not use
+            # packed storage.
+            root = Path(motion_file)
+            if (root / "manifest.json").is_file():
+                self._load_packed_store(motion_file, body_indices, target_joint_names)
+                return
+            motion_file = sorted(str(path) for path in root.glob("*.npz"))
+            if not motion_file:
+                raise FileNotFoundError(f"Motion directory contains no NPZ clips: {root}")
         self.motion_files = self._normalize_motion_files(motion_file)
 
         joint_pos_list: list[np.ndarray] = []
@@ -252,7 +271,82 @@ class MotionLoader:
         self.body_lin_vel_w = np.concatenate(body_lin_vel_list, axis=0)
         self.body_ang_vel_w = np.concatenate(body_ang_vel_list, axis=0)
 
+        if target_joint_names is not None and self.joint_pos.shape[1] != len(target_joint_names):
+            raise ValueError("NPZ motion joint width does not match target model")
         self.num_frames = int(self.joint_pos.shape[0])
+
+    def _load_packed_store(
+        self,
+        root_path: str,
+        body_indices: np.ndarray | None,
+        target_joint_names: Sequence[str] | None,
+    ) -> None:
+        """Load a manifest-backed packed store on the cold path."""
+        root = Path(root_path).resolve()
+        try:
+            manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Invalid packed motion manifest: {root / 'manifest.json'}") from exc
+        arrays = manifest.get("arrays")
+        required = (
+            "joint_pos",
+            "joint_vel",
+            "body_pos_w",
+            "body_quat_w",
+            "body_lin_vel_w",
+            "body_ang_vel_w",
+        )
+        if not isinstance(arrays, dict) or any(name not in arrays for name in required):
+            raise ValueError(f"Packed motion store is missing required arrays: {root}")
+
+        def load_array(name: str) -> np.ndarray:
+            spec = arrays[name]
+            if not isinstance(spec, dict):
+                raise ValueError(f"Invalid packed motion array specification for {name!r}")
+            path = (root / str(spec.get("file", ""))).resolve()
+            if root not in path.parents:
+                raise ValueError(f"Packed motion array escapes store: {path}")
+            try:
+                value = np.load(path, mmap_mode="r", allow_pickle=False)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Invalid packed motion array: {path}") from exc
+            if value.dtype != np.float32:
+                raise ValueError(f"Packed motion array {name!r} must be float32")
+            return value
+
+        loaded = {name: load_array(name) for name in required}
+        if target_joint_names is not None:
+            stored_names = tuple(str(name) for name in manifest.get("joint_names", ()))
+            try:
+                indices = np.asarray(
+                    [stored_names.index(name) for name in target_joint_names], dtype=np.intp
+                )
+            except ValueError as exc:
+                raise ValueError("Packed motion joint names do not match target model") from exc
+            for name in ("joint_pos", "joint_vel"):
+                loaded[name] = loaded[name][:, indices]
+        frames = loaded["joint_pos"].shape[0]
+        if any(value.shape[0] != frames for value in loaded.values()):
+            raise ValueError("Packed motion arrays have inconsistent frame counts")
+        if body_indices is not None:
+            for name in ("body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w"):
+                loaded[name] = loaded[name][:, body_indices]
+        self.fps = int(manifest.get("fps", 0))
+        if self.fps <= 0:
+            raise ValueError("Packed motion store must declare a positive fps")
+        self.num_joints = int(loaded["joint_pos"].shape[1])
+        self.num_bodies = int(loaded["body_pos_w"].shape[1])
+        for name in required:
+            setattr(self, name, loaded[name])
+        lengths_path = root / str(manifest.get("clip_lengths_file", "clip_lengths.npy"))
+        self.clip_lengths = np.asarray(np.load(lengths_path, allow_pickle=False), dtype=np.int32)
+        self.num_clips = int(self.clip_lengths.size)
+        self.clip_offsets = np.zeros(self.num_clips, dtype=np.int32)
+        if self.num_clips > 1:
+            self.clip_offsets[1:] = np.cumsum(self.clip_lengths[:-1], dtype=np.int32)
+        self.clip_end_frames = self.clip_offsets + self.clip_lengths - 1
+        self.num_frames = int(frames)
+        self.motion_files = (str(root),)
 
     @staticmethod
     def _normalize_motion_files(motion_file: str | Sequence[str]) -> tuple[str, ...]:
@@ -334,6 +428,13 @@ class MotionSampler:
         adaptive_kernel_size: int = 1,
         adaptive_uniform_ratio: float = 0.1,
         adaptive_alpha: float = 0.001,
+        adaptive_failure_stat: Literal["ema", "cumulative"] = "ema",
+        adaptive_failure_prior: float = 1.0,
+        adaptive_pre_failure_window: int = 200,
+        adaptive_failure_rate_max_over_mean: float = 200.0,
+        adaptive_sampling_update_interval: int = 200,
+        adaptive_attribution: Literal["episode_end", "trajectory"] = "trajectory",
+        adaptive_max_prob_per_motion: float | None = None,
         start_ratio: float = 0.0,
         rng: np.random.Generator | None = None,
     ):
@@ -347,13 +448,67 @@ class MotionSampler:
             adaptive_lambda: Decay factor for adaptive kernel
             adaptive_kernel_size: Kernel size for adaptive sampling
             adaptive_uniform_ratio: Uniform sampling ratio for adaptive mode
-            adaptive_alpha: EMA alpha for failure count updates
+            adaptive_alpha: EMA alpha for failure count updates (only used
+                when ``adaptive_failure_stat`` is "ema")
+            adaptive_failure_stat: Failure statistic driving sampling
+                weights and metrics: "ema" keeps the legacy per-bin failure
+                rate EMA; "cumulative" uses the count ratio
+                ``(failed + prior) / (visited + prior)``, whose prior dilutes
+                at 1/(N+1) per visit and keeps unvisited bins at rate 1.0.
+            adaptive_failure_prior: Laplace pseudo-count for the
+                "cumulative" statistic (unused by "ema").
             start_ratio: Fraction of envs forced to frame 0 in "mixed" mode
                 (remaining envs are uniformly sampled). Lets buffer concentrate
                 launch-transition samples while keeping motion-clip coverage.
         """
         if not 0.0 <= start_ratio <= 1.0:
             raise ValueError(f"start_ratio must be in [0, 1], got {start_ratio}")
+        if mode != "mixed" and start_ratio != 0.0:
+            raise ValueError("start_ratio is only effective when mode='mixed'")
+        if not np.isfinite(adaptive_lambda) or not 0.0 < adaptive_lambda <= 1.0:
+            raise ValueError(
+                "adaptive_lambda must be finite and within (0, 1], "
+                f"got {adaptive_lambda}"
+            )
+        if adaptive_kernel_size < 1:
+            raise ValueError(
+                f"adaptive_kernel_size must be a positive integer, got {adaptive_kernel_size}"
+            )
+        if not 0.0 <= adaptive_uniform_ratio <= 1.0:
+            raise ValueError(
+                "adaptive_uniform_ratio must be in [0, 1], "
+                f"got {adaptive_uniform_ratio}"
+            )
+        if not 0.0 < adaptive_alpha <= 1.0:
+            raise ValueError(f"adaptive_alpha must be in (0, 1], got {adaptive_alpha}")
+        if adaptive_failure_stat not in ("ema", "cumulative"):
+            raise ValueError("adaptive_failure_stat must be 'ema' or 'cumulative'")
+        if (
+            isinstance(adaptive_failure_prior, bool)
+            or not np.isfinite(adaptive_failure_prior)
+            or adaptive_failure_prior <= 0.0
+        ):
+            raise ValueError(
+                "adaptive_failure_prior must be a finite positive number, "
+                f"got {adaptive_failure_prior}"
+            )
+        if isinstance(adaptive_pre_failure_window, bool) or adaptive_pre_failure_window < 0:
+            raise ValueError("adaptive_pre_failure_window must be a non-negative integer")
+        if not np.isfinite(adaptive_failure_rate_max_over_mean) or adaptive_failure_rate_max_over_mean <= 0.0:
+            raise ValueError("adaptive_failure_rate_max_over_mean must be positive and finite")
+        if (
+            isinstance(adaptive_sampling_update_interval, bool)
+            or adaptive_sampling_update_interval < 1
+        ):
+            raise ValueError("adaptive_sampling_update_interval must be a positive integer")
+        if adaptive_attribution not in ("episode_end", "trajectory"):
+            raise ValueError("adaptive_attribution must be 'episode_end' or 'trajectory'")
+        if adaptive_max_prob_per_motion is not None and (
+            isinstance(adaptive_max_prob_per_motion, bool)
+            or not np.isfinite(adaptive_max_prob_per_motion)
+            or adaptive_max_prob_per_motion < 1.0
+        ):
+            raise ValueError("adaptive_max_prob_per_motion must be None or a finite value >= 1")
         self.motion_loader = motion_loader
         self.mode = mode
         self.num_envs = num_envs
@@ -362,6 +517,10 @@ class MotionSampler:
 
         # Current frame indices for each environment
         self.current_frames = np.zeros(num_envs, dtype=np.int32)
+        # Frame at which each environment's current episode was sampled; the
+        # trajectory attribution mode stamps every bin between this frame and
+        # the episode's terminal frame as a visit.
+        self._episode_start_frames = np.zeros(num_envs, dtype=np.int32)
         self.current_clip_indices = np.zeros(num_envs, dtype=np.int32)
         self.current_clip_end_frames = np.full(
             num_envs, motion_loader.clip_end_frames[0], dtype=np.int32
@@ -369,19 +528,86 @@ class MotionSampler:
 
         # Adaptive sampling parameters
         if bin_count is None:
-            # Auto-compute bin count based on motion length and FPS
-            self.bin_count = int(motion_loader.num_frames // motion_loader.fps) + 1
+            # Keep approximately one-second bins, as in the Sonic sampler.
+            configured_bin_count = int(motion_loader.num_frames // motion_loader.fps) + 1
         else:
-            self.bin_count = bin_count
+            configured_bin_count = int(bin_count)
+        if configured_bin_count < 1:
+            raise ValueError("bin_count must be a positive integer")
+
+        # Adaptive bins are clip-local.  ``bin_count`` is retained as the
+        # single-clip equivalent for backwards compatibility; for multiple
+        # clips it defines the target temporal bin width.
+        target_bin_width = max(1, int(math.ceil(motion_loader.num_frames / configured_bin_count)))
+        clip_bin_counts = np.maximum(
+            1, np.ceil(motion_loader.clip_lengths / target_bin_width).astype(np.int32)
+        )
+        self._clip_bin_counts = clip_bin_counts
+        self._bin_clip_indices = np.repeat(
+            np.arange(motion_loader.num_clips, dtype=np.int32), clip_bin_counts
+        )
+        bin_starts: list[int] = []
+        bin_ends: list[int] = []
+        bin_lengths: list[int] = []
+        self._clip_bin_ranges: list[tuple[int, int]] = []
+        cursor = 0
+        for clip_idx, num_bins in enumerate(clip_bin_counts):
+            length = int(motion_loader.clip_lengths[clip_idx])
+            starts = np.linspace(0, length, int(num_bins), endpoint=False, dtype=np.int32)
+            ends = np.r_[starts[1:], length].astype(np.int32)
+            bin_starts.extend((starts + motion_loader.clip_offsets[clip_idx]).tolist())
+            bin_ends.extend((ends + motion_loader.clip_offsets[clip_idx]).tolist())
+            bin_lengths.extend((ends - starts).tolist())
+            self._clip_bin_ranges.append((cursor, cursor + int(num_bins)))
+            cursor += int(num_bins)
+        self._bin_start_frames = np.asarray(bin_starts, dtype=np.int32)
+        self._bin_end_frames = np.asarray(bin_ends, dtype=np.int32)
+        self._bin_lengths = np.asarray(bin_lengths, dtype=np.float32)
+        adaptive_bin_count = int(self._bin_start_frames.size)
+        # Keep legacy bin-count metrics for non-adaptive modes.
+        self.bin_count = adaptive_bin_count if mode == "adaptive" else configured_bin_count
+        self._frame_to_bin = np.empty(motion_loader.num_frames, dtype=np.int32)
+        for bin_idx, (start, end) in enumerate(zip(self._bin_start_frames, self._bin_end_frames)):
+            self._frame_to_bin[start:end] = bin_idx
 
         self.adaptive_lambda = adaptive_lambda
         self.adaptive_kernel_size = adaptive_kernel_size
         self.adaptive_uniform_ratio = adaptive_uniform_ratio
         self.adaptive_alpha = adaptive_alpha
+        self.adaptive_failure_stat = adaptive_failure_stat
+        self.adaptive_failure_prior = float(adaptive_failure_prior)
+        self.adaptive_pre_failure_window = int(adaptive_pre_failure_window)
+        self.adaptive_failure_rate_max_over_mean = float(adaptive_failure_rate_max_over_mean)
+        self.adaptive_sampling_update_interval = int(adaptive_sampling_update_interval)
+        self.adaptive_attribution = adaptive_attribution
+        self.adaptive_max_prob_per_motion = adaptive_max_prob_per_motion
 
         # Failure tracking for adaptive sampling
+        # Raw counters are retained for diagnostics.  Sampling uses the EMA of
+        # per-bin failure *rates* below, rather than raw failure counts; this
+        # prevents frequently visited bins from creating a self-reinforcing
+        # sampling bias.
         self.bin_failed_count = np.zeros(self.bin_count, dtype=np.float32)
+        self.bin_visit_count = np.zeros(self.bin_count, dtype=np.float32)
+        # Under "cumulative" the rate starts at the prior value 1.0 so that
+        # recompute before the first update keeps cold-start exploration.
+        self.bin_failure_rate = np.full(
+            self.bin_count,
+            1.0 if adaptive_failure_stat == "cumulative" else 0.0,
+            dtype=np.float32,
+        )
+        # Non-zero prior prevents one early failure from monopolizing sampling.
+        self._bin_failure_rate_ema = np.ones(self.bin_count, dtype=np.float32)
+        # Visit EMA has no prior: unvisited bins must remain distinguishable in
+        # diagnostics.  Failure-rate EMA intentionally keeps a non-zero prior.
+        self._bin_visit_ema = np.zeros(self.bin_count, dtype=np.float32)
         self._current_bin_failed = np.zeros(self.bin_count, dtype=np.float32)
+        self._current_bin_visited = np.zeros(self.bin_count, dtype=np.float32)
+        self._sampling_probs = np.full(self.bin_count, 1.0 / self.bin_count, dtype=np.float32)
+        self._peer_counts = self._clip_bin_counts[self._bin_clip_indices].astype(np.float32)
+        self._uniform_probs = np.full(self.bin_count, 1.0 / self.bin_count, dtype=np.float32)
+        self._adaptive_steps_since_update = 0
+        self._adaptive_probs_initialized = False
 
         # Precompute adaptive kernel
         self.kernel = np.array(
@@ -393,6 +619,16 @@ class MotionSampler:
         self.sampling_entropy = 0.0
         self.sampling_top1_prob = 0.0
         self.sampling_top1_bin = 0.0
+        self.sampling_top1_clip_prob = float(1.0 / self.motion_loader.num_clips)
+        self.sampling_effective_bin_count = float(self.bin_count)
+        self.sampling_visited_bin_fraction = 0.0
+        self.sampling_failure_rate_mean = 0.0
+        self.sampling_failure_rate_max = 0.0
+        self.sampling_failure_count_total = 0.0
+        self.sampling_visit_count_total = 0.0
+        self.sampling_uniform_mass_actual = (
+            float(adaptive_uniform_ratio) if mode == "adaptive" else 0.0
+        )
         self._done_mask = np.zeros(num_envs, dtype=bool)
 
     def sample_frames(self, env_ids: np.ndarray) -> np.ndarray:
@@ -416,6 +652,29 @@ class MotionSampler:
             return self._sample_mixed(env_ids)
         else:
             raise ValueError(f"Unknown sampling mode: {self.mode}")
+
+    def set_clip_starts(self, env_ids: np.ndarray, clip_indices: np.ndarray) -> np.ndarray:
+        """Assign exact clip starts for deterministic evaluation resets.
+
+        This is the public, cold-path counterpart to stochastic training
+        sampling.  It lets evaluation pair policies on the same motion clips
+        without reaching into sampler-private arrays.
+        """
+        ids = np.asarray(env_ids)
+        clips = np.asarray(clip_indices)
+        if ids.ndim != 1 or clips.ndim != 1 or ids.shape != clips.shape:
+            raise ValueError("env_ids and clip_indices must be equal-length vectors")
+        if not np.issubdtype(ids.dtype, np.integer) or not np.issubdtype(clips.dtype, np.integer):
+            raise TypeError("env_ids and clip_indices must contain integers")
+        if np.any(ids < 0) or np.any(ids >= self.num_envs):
+            raise ValueError("env_ids are outside the sampler environment range")
+        if np.any(clips < 0) or np.any(clips >= self.motion_loader.num_clips):
+            raise ValueError("clip_indices are outside the motion dataset range")
+        ids = ids.astype(np.intp, copy=False)
+        clips = clips.astype(np.intp, copy=False)
+        frames = np.asarray(self.motion_loader.clip_offsets[clips], dtype=np.int32)
+        self._set_sampled_frames(ids, frames)
+        return frames
 
     def _sample_start(self, env_ids: np.ndarray) -> np.ndarray:
         """Always start from the global first frame (historical behavior)."""
@@ -457,6 +716,8 @@ class MotionSampler:
         self.sampling_entropy = 1.0  # Maximum entropy for uniform
         self.sampling_top1_prob = 1.0 / self.bin_count
         self.sampling_top1_bin = 0.5  # No specific bin preference
+        self.sampling_effective_bin_count = float(self.bin_count)
+        self.sampling_uniform_mass_actual = 1.0
 
         return frames
 
@@ -487,6 +748,7 @@ class MotionSampler:
         start_mass = self.start_ratio + (1.0 - self.start_ratio) / self.bin_count
         self.sampling_top1_prob = float(start_mass)
         self.sampling_top1_bin = 0.0
+        self.sampling_uniform_mass_actual = float(1.0 - self.start_ratio)
         if start_mass >= 1.0 - 1e-9:
             self.sampling_entropy = 0.0
         else:
@@ -501,18 +763,13 @@ class MotionSampler:
 
     def _sample_adaptive(self, env_ids: np.ndarray) -> np.ndarray:
         """Sample adaptively based on failure statistics."""
-        # Compute sampling probabilities
-        sampling_probs = self.bin_failed_count + self.adaptive_uniform_ratio / float(self.bin_count)
+        if (
+            not self._adaptive_probs_initialized
+            or self._adaptive_steps_since_update >= self.adaptive_sampling_update_interval
+        ):
+            self._recompute_adaptive_probs()
 
-        # Apply smoothing kernel (non-causal convolution)
-        if self.adaptive_kernel_size > 1:
-            # Pad and convolve
-            padded = np.pad(sampling_probs, (0, self.adaptive_kernel_size - 1), mode="edge")
-            sampling_probs = np.convolve(padded, self.kernel, mode="valid")
-
-        # Normalize to probabilities
-        sampling_probs = sampling_probs / sampling_probs.sum()
-
+        sampling_probs = self._sampling_probs
         # Sample bins
         sampled_bins = (
             np.random.choice(self.bin_count, size=len(env_ids), p=sampling_probs)
@@ -527,12 +784,94 @@ class MotionSampler:
             else self.rng.uniform(0.0, 1.0, len(env_ids))
         )
         frames = (
-            (sampled_bins + bin_offsets) / self.bin_count * (self.motion_loader.num_frames - 1)
+            self._bin_start_frames[sampled_bins]
+            + bin_offsets * self._bin_lengths[sampled_bins]
         ).astype(np.int32)
+        if self.adaptive_pre_failure_window > 0:
+            clip_indices = self.motion_loader.get_clip_indices(frames)
+            clip_starts = self.motion_loader.clip_offsets[clip_indices]
+            if self.rng is None:
+                offsets = np.random.randint(
+                    0, self.adaptive_pre_failure_window, len(env_ids), dtype=np.int32
+                )
+            else:
+                offsets = self.rng.integers(
+                    0, self.adaptive_pre_failure_window, len(env_ids), dtype=np.int32
+                )
+            frames = np.maximum(frames - offsets, clip_starts).astype(np.int32, copy=False)
 
         self._set_sampled_frames(env_ids, frames)
+        return np.asarray(frames, dtype=np.int32)
 
-        # Update metrics
+    def _recompute_adaptive_probs(self) -> None:
+        """Rebuild the adaptive distribution at the configured low frequency."""
+        # Compute probabilities from the smoothed failure-rate estimate.  The
+        # configured uniform ratio is an actual mixture weight, not an additive
+        # epsilon that vanishes as counters grow.
+        # Weight each clip equally, then distribute its mass over local bins.
+        # This matches gear_sonic's sequence-length-agnostic bin weighting.
+        if self.adaptive_failure_stat == "cumulative":
+            failure_stat = self.bin_failure_rate
+        else:
+            failure_stat = self._bin_failure_rate_ema
+        adaptive_weights = failure_stat / self._peer_counts
+        if not np.any(adaptive_weights > 0.0):
+            adaptive_probs = self._uniform_probs.copy()
+        else:
+            adaptive_weights += np.finfo(np.float32).eps
+            upper = float(adaptive_weights.mean()) * self.adaptive_failure_rate_max_over_mean
+            np.minimum(adaptive_weights, upper, out=adaptive_weights)
+            adaptive_probs = adaptive_weights / adaptive_weights.sum()
+
+        # Apply smoothing kernel (non-causal convolution)
+        if self.adaptive_kernel_size > 1:
+            smoothed = np.empty_like(adaptive_probs)
+            for start, end in self._clip_bin_ranges:
+                local = adaptive_probs[start:end]
+                if len(local) == 1:
+                    smoothed[start:end] = local
+                    continue
+                width = min(self.adaptive_kernel_size, len(local))
+                kernel = self.kernel[:width]
+                kernel = kernel / kernel.sum()
+                padded = np.pad(local, (0, width - 1), mode="edge")
+                smoothed[start:end] = np.convolve(padded, kernel, mode="valid")
+            adaptive_probs = smoothed
+            adaptive_probs /= adaptive_probs.sum()
+
+        sampling_probs = (
+            (1.0 - self.adaptive_uniform_ratio) * adaptive_probs
+            + self.adaptive_uniform_ratio * self._uniform_probs
+        )
+        sampling_probs /= sampling_probs.sum()
+        clip_mass = np.bincount(
+            self._bin_clip_indices,
+            weights=sampling_probs,
+            minlength=self.motion_loader.num_clips,
+        )
+        if self.adaptive_max_prob_per_motion is not None:
+            cap = self.adaptive_max_prob_per_motion / self.motion_loader.num_clips
+            over = clip_mass > cap
+            if np.any(over):
+                scale = np.ones_like(clip_mass)
+                scale[over] = cap / clip_mass[over]
+                sampling_probs = sampling_probs * scale[self._bin_clip_indices]
+                # Plain renormalization would push the trimmed excess straight
+                # back into the capped clips whenever the remaining clips carry
+                # near-zero mass; redistribute it uniformly over the uncapped
+                # clips' bins instead.
+                excess = float((clip_mass[over] - cap).sum())
+                rest_bins = (~over)[self._bin_clip_indices]
+                if np.any(rest_bins) and excess > 0.0:
+                    sampling_probs[rest_bins] += excess / np.count_nonzero(rest_bins)
+                sampling_probs /= sampling_probs.sum()
+                clip_mass = np.bincount(
+                    self._bin_clip_indices,
+                    weights=sampling_probs,
+                    minlength=self.motion_loader.num_clips,
+                )
+        self._sampling_probs[...] = sampling_probs
+        self.sampling_top1_clip_prob = float(clip_mass.max())
         H = -(sampling_probs * np.log(sampling_probs + 1e-12)).sum()
         H_norm = H / math.log(self.bin_count) if self.bin_count > 1 else 1.0
         pmax_idx = np.argmax(sampling_probs)
@@ -541,46 +880,157 @@ class MotionSampler:
         self.sampling_entropy = H_norm
         self.sampling_top1_prob = float(pmax)
         self.sampling_top1_bin = float(pmax_idx) / self.bin_count
+        self.sampling_effective_bin_count = float(np.exp(H))
+        self.sampling_uniform_mass_actual = float(self.adaptive_uniform_ratio)
+        if self.adaptive_failure_stat == "cumulative":
+            visited_bins = self.bin_visit_count > 0.0
+        else:
+            visited_bins = self._bin_visit_ema > 0.0
+        self.sampling_visited_bin_fraction = float(
+            np.count_nonzero(visited_bins) / max(self.bin_count, 1)
+        )
+        self.sampling_failure_rate_mean = float(np.mean(failure_stat))
+        self.sampling_failure_rate_max = float(np.max(failure_stat))
+        self.sampling_failure_count_total = float(self.bin_failed_count.sum())
+        self.sampling_visit_count_total = float(self.bin_visit_count.sum())
+        self._adaptive_probs_initialized = True
+        self._adaptive_steps_since_update = 0
 
-        return np.asarray(frames, dtype=np.int32)
+    def _trajectory_bin_indices(self, frames: np.ndarray, completed: np.ndarray) -> np.ndarray:
+        """Flat bin indices covered by each completed episode's traversed frames.
+
+        Ranges stay inside the clip the episode started in (defensively
+        clamped to that clip's end frame), matching the contract that
+        episodes never cross motion clips.
+        """
+        ends = frames.astype(np.int32, copy=False)[completed]
+        starts = np.minimum(self._episode_start_frames[completed], ends)
+        loader = self.motion_loader
+        start_clips = loader.get_clip_indices(starts)
+        ends = np.minimum(ends, loader.clip_end_frames[start_clips]).astype(np.int32, copy=False)
+        lengths = (ends - starts + 1).astype(np.int64)
+        total = int(lengths.sum())
+        if total <= 0:
+            return np.empty(0, dtype=np.int64)
+        episode_offsets = np.zeros(lengths.size + 1, dtype=np.int64)
+        np.cumsum(lengths, out=episode_offsets[1:])
+        within = np.arange(total, dtype=np.int64) - np.repeat(episode_offsets[:-1], lengths)
+        frame_indices = np.repeat(starts.astype(np.int64), lengths) + within
+        episode_ids = np.repeat(np.arange(lengths.size, dtype=np.int64), lengths)
+        # Deduplicate to one visit per (episode, bin): an episode spending 21
+        # frames inside a bin must count as a single visit, not 21.
+        keys = episode_ids * self.bin_count + self._frame_to_bin[frame_indices]
+        return (np.unique(keys) % self.bin_count).astype(np.int64)
 
     def update_failure_stats(
-        self, terminated: np.ndarray, current_frames: np.ndarray | None = None
+        self,
+        terminated: np.ndarray,
+        current_frames: np.ndarray | None = None,
+        episode_done: np.ndarray | None = None,
     ):
         """Update failure statistics for adaptive sampling.
 
         Args:
-            terminated: Boolean array indicating which environments terminated
+            terminated: Boolean array indicating which environments terminated due to failure
             current_frames: Optional current frame indices (uses internal if None)
+            episode_done: Optional boolean array indicating all completed episodes
+                (including timeout/truncation). If omitted, all supplied rows are
+                treated as completed for backwards compatibility with the direct
+                sampler API.
+
+        Attribution modes:
+
+        - ``trajectory`` (default): every completed episode stamps a visit on
+          each bin it traversed from its sampled start frame to its terminal
+          frame; failures stamp only their terminal bin. This restores
+          within-clip contrast, which end-frame attribution destroys (successes
+          pile onto the clip-final bin while mid-clip bins only ever receive
+          failure stamps and saturate at rate 1.0). Start frames come from the
+          internal ``_episode_start_frames`` recorded at sampling time.
+        - ``episode_end``: legacy behaviour; visits and failures are both
+          stamped on the episode's terminal-frame bin.
         """
         if self.mode != "adaptive":
             return
+
+        self._adaptive_steps_since_update += 1
 
         if current_frames is None:
             current_frames = self.current_frames
 
         # Find which bins failed
-        if np.any(terminated):
-            bin_indices = np.clip(
-                (current_frames * self.bin_count) // max(self.motion_loader.num_frames, 1),
-                0,
-                self.bin_count - 1,
+        frames = np.asarray(current_frames)
+        done = np.asarray(terminated, dtype=bool)
+        completed = (
+            np.ones_like(done, dtype=bool)
+            if episode_done is None
+            else np.asarray(episode_done, dtype=bool)
+        )
+        if (
+            frames.shape != (self.num_envs,)
+            or done.shape != (self.num_envs,)
+            or completed.shape != (self.num_envs,)
+        ):
+            raise ValueError(
+                "MotionSampler failure statistics expect current_frames and terminated "
+                f"with shape ({self.num_envs},), got {frames.shape}, {done.shape}, "
+                f"and {completed.shape}"
             )
-            failed_bins = bin_indices[terminated]
+        # Statistics are episode-level. Updating on every live environment step
+        # incorrectly treats ordinary transitions as successful episodes and
+        # rapidly drives the failure EMA toward zero.
+        if not np.any(completed):
+            return
+        if np.any(frames < 0) or np.any(frames >= self.motion_loader.num_frames):
+            raise ValueError("MotionSampler failure frames are outside the motion buffer")
+        bin_indices = self._frame_to_bin[frames.astype(np.int32, copy=False)]
+        if self.adaptive_attribution == "trajectory":
+            visited_indices = self._trajectory_bin_indices(frames, completed)
+        else:
+            visited_indices = bin_indices[completed]
+        self._current_bin_visited.fill(0.0)
+        np.add.at(self._current_bin_visited, visited_indices, 1.0)
+        self._current_bin_failed.fill(0.0)
+        if np.any(done):
+            np.add.at(self._current_bin_failed, bin_indices[done & completed], 1.0)
 
-            # Count failures per bin
-            self._current_bin_failed[:] = 0
-            for bin_idx in failed_bins:
-                self._current_bin_failed[bin_idx] += 1
-
-            # Update EMA of failure counts
-            self.bin_failed_count = (
-                self.adaptive_alpha * self._current_bin_failed
-                + (1 - self.adaptive_alpha) * self.bin_failed_count
+        self.bin_visit_count += self._current_bin_visited
+        self.bin_failed_count += self._current_bin_failed
+        if self.adaptive_failure_stat == "cumulative":
+            # Pure function of the cumulative counters; the prior keeps the
+            # rate well-defined for bins nobody visited yet.
+            prior = np.float32(self.adaptive_failure_prior)
+            np.divide(
+                self.bin_failed_count + prior,
+                self.bin_visit_count + prior,
+                out=self.bin_failure_rate,
             )
+        else:
+            visited = self._current_bin_visited > 0.0
+            current_rate = np.zeros_like(self._current_bin_failed)
+            np.divide(
+                self._current_bin_failed,
+                self._current_bin_visited,
+                out=current_rate,
+                where=visited,
+            )
+            # Update only bins observed in this collector cycle; otherwise an
+            # unvisited bin would decay toward zero merely because it was absent.
+            self._bin_failure_rate_ema[visited] = (
+                (1.0 - self.adaptive_alpha) * self._bin_failure_rate_ema[visited]
+                + self.adaptive_alpha * current_rate[visited]
+            )
+            self._bin_visit_ema[visited] = (
+                (1.0 - self.adaptive_alpha) * self._bin_visit_ema[visited]
+                + self.adaptive_alpha * self._current_bin_visited[visited]
+            )
+            self.bin_failure_rate[...] = self._bin_failure_rate_ema
+        self.sampling_failure_count_total = float(self.bin_failed_count.sum())
+        self.sampling_visit_count_total = float(self.bin_visit_count.sum())
 
     def _set_sampled_frames(self, env_ids: np.ndarray, frames: np.ndarray) -> None:
         self.current_frames[env_ids] = frames
+        self._episode_start_frames[env_ids] = frames
         clip_indices = self.motion_loader.get_clip_indices(frames)
         self.current_clip_indices[env_ids] = clip_indices
         self.current_clip_end_frames[env_ids] = self.motion_loader.clip_end_frames[clip_indices]

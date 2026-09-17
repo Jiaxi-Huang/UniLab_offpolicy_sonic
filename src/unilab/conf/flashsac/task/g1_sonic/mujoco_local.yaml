@@ -1,0 +1,60 @@
+# @package _global_
+defaults:
+  - /task/g1_sonic/base
+  - _self_
+
+training:
+  sim_backend: mujoco
+algo:
+  num_envs: 1024
+  batch_size: 256
+  replay_buffer_n: 256
+  learning_starts: 24
+env:
+  commands:
+    motion:
+      params:
+        motion_file: data/lafan1/robot_filtered
+        smpl_motion_file: data/lafan1/smpl_filtered
+        motion_store_file: data/lafan1/packed_smoke
+        encoder_sampling: mixed
+        #anchor_pos_z_threshold: 0.2
+        #anchor_ori_threshold: 0.2
+        #ee_body_pos_z_threshold: 0.2
+        #low_reference_height_threshold: 0.5
+        #low_reference_anchor_pos_z_threshold: 0.75
+        #low_reference_ee_body_pos_z_threshold: 0.75
+        #foot_pos_threshold: 0.3
+        pose_range:
+          x: [-0.0, 0.0]
+          y: [-0.0, 0.0]
+          z: [-0.0, 0.0]
+          roll: [-0., 0.]
+          pitch: [-0., 0.]
+          yaw: [-0., 0.]
+        velocity_range:
+          x: [-0., 0.]
+          y: [-0., 0.]
+          z: [-0., 0.]
+          roll: [-0., 0.]
+          pitch: [-0., 0.]
+          yaw: [-0., 0]
+        joint_position_range: [-0.0, 0.0]
+        joint_default_position_range: [0.0, 0.0]
+        joint_velocity_range: [0.0, 0.0]
+        reward_point_body_names: [pelvis, left_wrist_yaw_link, right_wrist_yaw_link, left_ankle_roll_link, right_ankle_roll_link]
+        reward_point_body_offsets: [[0.0, 0.0, 0.0], [0.18, -0.025, 0.0], [0.18, 0.025, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+  actions:
+    joint_pos:
+      _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicJointPositionActionCfg
+      entity_name: robot
+      actuator_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint, right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint, waist_yaw_joint, waist_roll_joint, waist_pitch_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint, left_wrist_roll_joint, left_wrist_pitch_joint, left_wrist_yaw_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint, right_wrist_roll_joint, right_wrist_pitch_joint, right_wrist_yaw_joint]
+      # Training follows the canonical G1 FlashSAC/FastSAC action contract.
+      # Official SONIC per-joint scaling is injected only by playback.
+      scale: 2.0
+      simulate_action_latency: true
+      use_default_offset: true
+  events:
+    base_mass: null
+    base_com: null
+    encoder_bias: null

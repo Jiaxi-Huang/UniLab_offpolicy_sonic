@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 import dataclasses
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from typing import TYPE_CHECKING, Any, Optional, Tuple, cast
@@ -513,6 +513,9 @@ class NpEnv(ABEnv):
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
         on_frame: Callable[[int, np.ndarray], np.ndarray | None] | None = None,
+        extra_data_getter: Callable[[], np.ndarray | None] | None = None,
+        ghost_state_getter: Callable[[], np.ndarray | None] | None = None,
+        ghost_joint_names: Sequence[str] | None = None,
     ) -> str | None:
         """Execute playback through the concrete backend.
 
@@ -521,6 +524,9 @@ class NpEnv(ABEnv):
         callback fails closed until the upstream contract lands.  Use
         :class:`unilab.visualization.playback_session.SnapshotPlaybackSession`
         for deferred rendering with per-frame callbacks today.
+        ``ghost_state_getter``/``ghost_joint_names`` drive the SONIC reference
+        motion overlay and require the unisim fork that extends the playback
+        contract accordingly.
         """
         if on_frame is not None:
             raise NotImplementedError(
@@ -543,6 +549,9 @@ class NpEnv(ABEnv):
                 frame_state_getter=frame_state_getter,
                 camera_kwargs=camera_kwargs,
                 debug_overlay_getter=debug_overlay_getter,
+                extra_data_getter=extra_data_getter,
+                ghost_state_getter=ghost_state_getter,
+                ghost_joint_names=ghost_joint_names,
             ),
         )
 

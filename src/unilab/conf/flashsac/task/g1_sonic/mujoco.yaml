@@ -1,0 +1,38 @@
+# @package _global_
+defaults:
+  - /task/g1_sonic/base
+  - _self_
+
+training:
+  sim_backend: mujoco
+algo:
+  num_envs: 4096
+  batch_size: 2048
+  updates_per_step: 4
+  replay_buffer_n: 1024
+  #learning_starts: 512
+  #actor_lr: 1.0e-4
+  algo_params:
+    #actor_bc_alpha: 0.01
+    log_std_max: 0.0
+    temp_target_sigma: 0.2
+    #learning_rate_warmup_steps: 24
+    learning_rate_end: 5.0e-5
+    #learning_rate_decay_steps: 450000
+env:
+  commands:
+    motion:
+      params:
+        motion_file: data/sonic/robot_filtered
+        smpl_motion_file: data/sonic/smpl_filtered
+        motion_store_file: data/sonic/packed
+        encoder_sampling: mixed
+        sampling_mode: adaptive
+        adaptive_kernel_size: 1
+        adaptive_uniform_ratio: 0.3
+        #adaptive_alpha: 0.05
+        #adaptive_failure_rate_max_over_mean: 30.0
+  events:
+    #base_mass: null
+    #base_com: null
+    encoder_bias: null

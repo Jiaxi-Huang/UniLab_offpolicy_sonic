@@ -1,0 +1,17 @@
+# @package _global_
+defaults:
+  - /task/g1_sonic/base
+  - _self_
+
+training:
+  sim_backend: motrix
+env:
+  events:
+    base_mass: null
+    base_com: null
+    encoder_bias: null
+algo:
+  num_envs: 1024
+  batch_size: 256
+  replay_buffer_n: 256
+  learning_starts: 24

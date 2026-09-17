@@ -23,13 +23,17 @@ algo:
   critic_hidden_dim: 256
   num_atoms: 101
   obs_normalization: false
-  use_layer_norm: false
   algo_params:
     normalize_reward: true
     normalized_g_max: 5.0
     actor_num_blocks: 2
     critic_num_blocks: 2
     actor_bc_alpha: 0.0
+    # "replay" = BC against replayed actions; "reference" = BC against the
+    # motion-reference joints packed in the next observation (SONIC only).
+    actor_bc_target: replay
+    # Optional linear anneal endpoint of actor_bc_alpha; null keeps it constant.
+    actor_bc_alpha_end: null
     actor_noise_zeta_mu: 2.0
     actor_noise_zeta_max: 16
     critic_min_v: -5.0

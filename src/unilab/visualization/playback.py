@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, TypeVar, cast
+from typing import Any, Callable, Sequence, TypeVar, cast
 
 import numpy as np
 from unisim.backend.base import CameraCfg, DebugOverlayGetter
@@ -54,6 +54,9 @@ def render_play_mode(
     camera_kwargs: CameraCfg | dict[str, Any] | None = None,
     debug_overlay_getter: DebugOverlayGetter | None = None,
     on_frame: Callable[[int, np.ndarray], np.ndarray | None] | None = None,
+    extra_data_getter: Callable[[], np.ndarray | None] | None = None,
+    ghost_state_getter: Callable[[], np.ndarray | None] | None = None,
+    ghost_joint_names: Sequence[str] | None = None,
 ) -> str | None:
     """Run playback through the env/backend playback contract.
 
@@ -76,6 +79,9 @@ def render_play_mode(
             camera_kwargs=camera_kwargs,
             debug_overlay_getter=debug_overlay_getter,
             on_frame=on_frame,
+            extra_data_getter=extra_data_getter,
+            ghost_state_getter=ghost_state_getter,
+            ghost_joint_names=ghost_joint_names,
         ),
     )
 

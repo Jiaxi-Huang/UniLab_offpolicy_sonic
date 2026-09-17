@@ -1,6 +1,6 @@
 import abc
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from typing import Any, Optional
@@ -365,6 +365,9 @@ class ABEnv(abc.ABC):
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
         on_frame: OnPlaybackFrameFn | None = None,
+        extra_data_getter: Callable[[], np.ndarray | None] | None = None,
+        ghost_state_getter: Callable[[], np.ndarray | None] | None = None,
+        ghost_joint_names: Sequence[str] | None = None,
     ) -> str | None:
         """Execute playback through the backend contract.
 
@@ -373,6 +376,8 @@ class ABEnv(abc.ABC):
         (``None`` disables overlays for the frame).  ``on_frame`` is an
         optional ``(frame_index, frame) -> frame | None`` callback applied to
         each recorded frame before it is written to the video.
+        ``ghost_state_getter``/``ghost_joint_names`` optionally drive a
+        translucent reference-motion overlay robot during video playback.
         """
         raise NotImplementedError(f"{self.__class__.__name__} does not support playback execution")
 
@@ -390,6 +395,9 @@ class ABEnv(abc.ABC):
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
         on_frame: OnPlaybackFrameFn | None = None,
+        extra_data_getter: Callable[[], np.ndarray | None] | None = None,
+        ghost_state_getter: Callable[[], np.ndarray | None] | None = None,
+        ghost_joint_names: Sequence[str] | None = None,
         on_plan: Callable[[BackendPlayRenderPlan], None] | None = None,
     ) -> str | None:
         """Resolve configured playback mode and execute it through the backend contract.
@@ -431,6 +439,9 @@ class ABEnv(abc.ABC):
             camera_kwargs=camera_kwargs,
             debug_overlay_getter=debug_overlay_getter,
             on_frame=on_frame,
+            extra_data_getter=extra_data_getter,
+            ghost_state_getter=ghost_state_getter,
+            ghost_joint_names=ghost_joint_names,
         )
 
     @property

@@ -1,0 +1,12 @@
+# @package _global_
+benchmark:
+  dataset: sonic
+env:
+  commands:
+    motion:
+      params:
+        motion_file: data/sonic/robot_filtered
+        smpl_motion_file: data/sonic/smpl_filtered
+        motion_store_file: data/sonic/packed
+        encoder_sampling: g1
+        sampling_mode: clip_start

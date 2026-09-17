@@ -169,6 +169,77 @@ def get_grid_offsets(num_envs, spacing=1.0):
     return offsets
 
 
+# Translucent overlay twin of the playback robot, used to visualize reference
+# motion next to the policy rollout (mjbatch-style ghost).
+GHOST_RGBA = (0.95, 0.45, 0.10, 0.35)
+
+
+def _prepare_ghost_model(model, joint_names):
+    """Prepare a translucent reference-motion overlay twin of a playback model.
+
+    Visual-only geoms (``contype == 0 and conaffinity == 0``) become the
+    translucent ghost shell; every other geom is hidden so the overlay never
+    duplicates the robot's collision primitives. ``joint_names`` must match the
+    joint columns of the ghost qpos rows (see ``_add_ghost_geoms``).
+    """
+    visual = (model.geom_contype == 0) & (model.geom_conaffinity == 0)
+    model.geom_rgba[visual] = GHOST_RGBA
+    model.geom_rgba[~visual, 3] = 0.0
+
+    root_adr = -1
+    for joint_id in range(model.njnt):
+        if model.jnt_type[joint_id] == mujoco.mjtJoint.mjJNT_FREE:
+            root_adr = int(model.jnt_qposadr[joint_id])
+            break
+    if root_adr < 0:
+        raise ValueError("Ghost overlay requires a free-joint root body in the playback model.")
+
+    joint_adrs = []
+    for name in joint_names:
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        if joint_id < 0:
+            raise ValueError(f"Ghost joint {name!r} is missing from the playback model.")
+        if model.jnt_type[joint_id] != mujoco.mjtJoint.mjJNT_HINGE:
+            raise ValueError(f"Ghost joint {name!r} must be a hinge joint.")
+        joint_adrs.append(int(model.jnt_qposadr[joint_id]))
+
+    vopt = mujoco.MjvOption()
+    vopt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = True
+    return {
+        "model": model,
+        "data": mujoco.MjData(model),
+        "root_adr": root_adr,
+        "joint_adrs": np.asarray(joint_adrs, dtype=np.intp),
+        "vopt": vopt,
+    }
+
+
+def _add_ghost_geoms(ghost, ghost_qpos_row, offset, pert, scene):
+    """Pose the ghost twin from one reference row and append its geoms to *scene*.
+
+    ``ghost_qpos_row`` is ``[root_pos(3), root_quat wxyz(4), joint_pos]`` with
+    joint entries in the ``joint_names`` order passed to ``_prepare_ghost_model``.
+    """
+    data = ghost["data"]
+    root_adr = ghost["root_adr"]
+    data.qpos[root_adr : root_adr + 7] = ghost_qpos_row[:7]
+    data.qpos[ghost["joint_adrs"]] = ghost_qpos_row[7:]
+    if offset is not None:
+        data.qpos[root_adr] += float(offset[0])
+        data.qpos[root_adr + 1] += float(offset[1])
+    # Kinematics-only forward pass: the ghost is never simulated, body/geom
+    # world poses are all the renderer needs from it.
+    mujoco.mj_kinematics(ghost["model"], data)
+    mujoco.mjv_addGeoms(
+        ghost["model"],
+        data,
+        ghost["vopt"],
+        pert,
+        mujoco.mjtCatBit.mjCAT_DYNAMIC,
+        scene,
+    )
+
+
 # Worker global context
 _worker_ctx: dict[str, Any] = {}
 
@@ -220,8 +291,12 @@ def _replicable_terrain_geom_indices(model) -> np.ndarray:
     return np.asarray(indices, dtype=np.int64)
 
 
-def init_worker(model_path, shape):
-    """Initialize MuJoCo-only rendering context for a worker process."""
+def init_worker(model_path, shape, ghost_joint_names=None):
+    """Initialize MuJoCo-only rendering context for a worker process.
+
+    ``ghost_joint_names`` optionally prepares a translucent overlay twin of the
+    primary playback model for reference-motion ghost rendering.
+    """
     import atexit
 
     def _load_model(path_like):
@@ -235,8 +310,10 @@ def init_worker(model_path, shape):
 
     if isinstance(model_path, Sequence) and not isinstance(model_path, (str, bytes, os.PathLike)):
         models = [_load_model(path) for path in model_path]
+        primary_path = model_path[0]
     else:
         models = [_load_model(model_path)]
+        primary_path = model_path
 
     for model in models:
         model.vis.global_.offwidth = 3840
@@ -246,6 +323,10 @@ def init_worker(model_path, shape):
     _worker_ctx["data_list"] = [mujoco.MjData(model) for model in models]
     _worker_ctx["terrain_geom_indices"] = [_replicable_terrain_geom_indices(m) for m in models]
     _worker_ctx["renderer"] = mujoco.Renderer(models[0], height=shape[1], width=shape[0])
+    if ghost_joint_names is not None:
+        _worker_ctx["ghost"] = _prepare_ghost_model(
+            _load_model(primary_path), tuple(ghost_joint_names)
+        )
     atexit.register(_close_worker)
 
 
@@ -253,8 +334,10 @@ def render_frame_job(args):
     """
     Worker function to render a single frame.
     args: (state_batch, offsets, transparent, cam_distance, cam_elevation, cam_azimuth,
-           cam_lookat, marker_positions)
+           cam_lookat, marker_positions, ghost_qpos)
     marker_positions: optional (num_envs, 3) world-frame positions for overlay spheres.
+    ghost_qpos: optional (num_envs, 7 + n_joints) reference-motion rows for the
+    translucent ghost overlay ([root_pos, root_quat wxyz, joint_pos]).
     """
     (
         state_batch,
@@ -265,6 +348,7 @@ def render_frame_job(args):
         cam_azimuth,
         cam_lookat,
         marker_positions,
+        ghost_qpos,
     ) = args
 
     models = _worker_ctx["models"]
@@ -433,6 +517,21 @@ def render_frame_job(args):
             )
             scene.ngeom += 1
 
+    # 4. Overlay the translucent reference-motion ghost twin
+    ghost = _worker_ctx.get("ghost")
+    if ghost is not None and ghost_qpos is not None:
+        scene = renderer.scene
+        for env_idx in range(num_envs):
+            if scene.ngeom >= scene.maxgeom:
+                break
+            _add_ghost_geoms(
+                ghost,
+                ghost_qpos[env_idx],
+                offsets[env_idx] if offsets is not None else None,
+                pert,
+                scene,
+            )
+
     return renderer.render()
 
 
@@ -449,6 +548,8 @@ def render_states_get_frames(
     cam_lookat=None,
     render_spacing=1.0,
     marker_positions_list=None,
+    ghost_qpos_list=None,
+    ghost_joint_names=None,
 ):
     """
     Render a list of physics states and return the list of frames.
@@ -466,12 +567,21 @@ def render_states_get_frames(
         cam_lookat: Optional [x, y, z] lookat override for the free camera.
         render_spacing: Grid spacing used to offset each env in composed video frames.
         marker_positions_list: Optional list of (num_envs, 3) arrays for overlay spheres.
+        ghost_qpos_list: Optional list of (num_envs, 7 + n_joints) reference-motion rows
+            driving a translucent ghost overlay robot per frame.
+        ghost_joint_names: Joint column names for the ghost qpos rows; required when
+            ghost_qpos_list is provided.
     Returns:
         List of numpy arrays (H, W, 3) (RGB)
     """
     if not state_list:
         print("No states to render.")
         return []
+
+    if (ghost_qpos_list is None) != (ghost_joint_names is None):
+        raise ValueError(
+            "Ghost overlay requires both ghost_qpos_list and ghost_joint_names."
+        )
 
     if not render_backend_usable():
         _warn_render_unavailable()
@@ -487,12 +597,13 @@ def render_states_get_frames(
 
     # Prepare arguments for each frame
     tasks = [
-        (s, offsets, False, cam_distance, cam_elevation, cam_azimuth, cam_lookat, m)
-        for s, m in zip(
+        (s, offsets, False, cam_distance, cam_elevation, cam_azimuth, cam_lookat, m, g)
+        for s, m, g in zip(
             state_list,
             marker_positions_list
             if marker_positions_list is not None
             else [None] * len(state_list),
+            ghost_qpos_list if ghost_qpos_list is not None else [None] * len(state_list),
         )
     ]
 
@@ -501,7 +612,7 @@ def render_states_get_frames(
     if num_processes <= 1:
         # Serial execution
         # Initialize context manually
-        init_worker(model_path, shape)
+        init_worker(model_path, shape, ghost_joint_names)
         try:
             for task in tasks:
                 res = render_frame_job(task)
@@ -524,7 +635,7 @@ def render_states_get_frames(
                 max_workers=num_processes,
                 mp_context=ctx,
                 initializer=init_worker,
-                initargs=(model_path, shape),
+                initargs=(model_path, shape, ghost_joint_names),
             ) as pool:
                 frames = list(pool.map(render_frame_job, tasks, chunksize=chunksize))
         except BrokenExecutor as exc:
@@ -567,6 +678,7 @@ def render_frame_tracking_job(args):
         cam_elevation,
         cam_azimuth,
         marker_positions,
+        ghost_qpos,
     ) = args
 
     models = _worker_ctx["models"]
@@ -703,6 +815,21 @@ def render_frame_tracking_job(args):
             )
             scene.ngeom += 1
 
+    # Overlay the translucent reference-motion ghost twin for rendered envs
+    ghost = _worker_ctx.get("ghost")
+    if ghost is not None and ghost_qpos is not None:
+        scene = renderer.scene
+        for global_i in env_indices:
+            if scene.ngeom >= scene.maxgeom:
+                break
+            _add_ghost_geoms(
+                ghost,
+                ghost_qpos[global_i],
+                offsets[global_i] if offsets is not None else None,
+                pert,
+                scene,
+            )
+
     return renderer.render()
 
 
@@ -718,6 +845,8 @@ def render_states_get_frames_tracking(
     cam_azimuth=90,
     render_spacing=1.0,
     marker_positions_list=None,
+    ghost_qpos_list=None,
+    ghost_joint_names=None,
 ):
     """Render with camera tracking on a single primary environment.
 
@@ -733,10 +862,20 @@ def render_states_get_frames_tracking(
         cam_elevation: Camera elevation angle in degrees.
         cam_azimuth: Camera azimuth angle in degrees.
         render_spacing: Grid spacing for env layout.
+        marker_positions_list: Optional list of (num_envs, 3) arrays for overlay spheres.
+        ghost_qpos_list: Optional list of (num_envs, 7 + n_joints) reference-motion rows
+            driving a translucent ghost overlay robot per frame.
+        ghost_joint_names: Joint column names for the ghost qpos rows; required when
+            ghost_qpos_list is provided.
     """
     if not state_list:
         print("No states to render.")
         return []
+
+    if (ghost_qpos_list is None) != (ghost_joint_names is None):
+        raise ValueError(
+            "Ghost overlay requires both ghost_qpos_list and ghost_joint_names."
+        )
 
     if not render_backend_usable():
         _warn_render_unavailable()
@@ -758,19 +897,20 @@ def render_states_get_frames_tracking(
     )
 
     tasks = [
-        (s, offsets, env_indices, primary_local_idx, cam_distance, cam_elevation, cam_azimuth, m)
-        for s, m in zip(
+        (s, offsets, env_indices, primary_local_idx, cam_distance, cam_elevation, cam_azimuth, m, g)
+        for s, m, g in zip(
             state_list,
             marker_positions_list
             if marker_positions_list is not None
             else [None] * len(state_list),
+            ghost_qpos_list if ghost_qpos_list is not None else [None] * len(state_list),
         )
     ]
 
     # Camera tracking changes each frame so multiprocessing gives inconsistent
     # results when workers don't share state. Default to serial.
     frames = []
-    init_worker(model_path, shape)
+    init_worker(model_path, shape, ghost_joint_names)
     try:
         for task in tasks:
             frames.append(render_frame_tracking_job(task))

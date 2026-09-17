@@ -35,7 +35,18 @@ _CASES = (
     ("ppo", "g1_box_tracking", "G1BoxTracking"),
 )
 
-_SAMPLER_STAT_METRICS = ("sampling_entropy", "sampling_top1_prob", "sampling_top1_bin")
+_SAMPLER_STAT_METRICS = (
+    "sampling_entropy",
+    "sampling_top1_prob",
+    "sampling_top1_bin",
+    "sampling_effective_bin_count",
+    "sampling_visited_bin_fraction",
+    "sampling_failure_rate_mean",
+    "sampling_failure_rate_max",
+    "sampling_failure_count_total",
+    "sampling_visit_count_total",
+    "sampling_uniform_mass_actual",
+)
 
 _ACCESSORS: dict[str, Callable[[MotionCommand], np.ndarray]] = {
     "command": lambda term: term.command,

@@ -1722,7 +1722,7 @@ def test_offpolicy_build_play_actor_preserves_flashsac_model_kwargs(
         98,
         12,
         cfg.algo.actor_hidden_dim,
-        cfg.algo.use_layer_norm,
+        False,
         "cpu",
     )
     assert kwargs == {
