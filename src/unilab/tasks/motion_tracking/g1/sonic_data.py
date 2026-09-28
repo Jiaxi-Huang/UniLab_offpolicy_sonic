@@ -587,9 +587,22 @@ class SonicNpzMotionLoader(_SonicMotionLoader):
 
 
 class SonicPackedMotionLoader(_SonicMotionLoader):
-    """Read a versioned SONIC store through shared, read-only NumPy mappings."""
+    """Read a versioned SONIC store and materialize it into in-memory arrays.
 
-    def __init__(self, store: str | Path, *, backend, body_names: tuple[str, ...]) -> None:
+    The store is validated through the shared read-only NumPy mapping and
+    then copied once into plain arrays, following the upstream motion-lib
+    contract: after init the hot path never touches the ``np.memmap``
+    subclass dispatch or the page cache again.  Collectors are spawn
+    processes, so each one pays this one-time copy privately.
+    """
+
+    def __init__(
+        self,
+        store: str | Path,
+        *,
+        backend,
+        body_names: tuple[str, ...],
+    ) -> None:
         root = Path(store).expanduser().resolve()
         manifest_path = root / "manifest.json"
         if not manifest_path.is_file():
@@ -659,6 +672,7 @@ class SonicPackedMotionLoader(_SonicMotionLoader):
         array_specs = manifest.get("arrays")
         if not isinstance(array_specs, dict) or set(array_specs) != set(SONIC_PACKED_ARRAY_NAMES):
             raise ValueError("SONIC packed manifest has an incompatible array set")
+        arrays: dict[str, np.memmap] = {}
         for name in SONIC_PACKED_ARRAY_NAMES:
             spec = array_specs[name]
             if not isinstance(spec, dict):
@@ -676,7 +690,11 @@ class SonicPackedMotionLoader(_SonicMotionLoader):
                 or tuple(spec.get("shape", ())) != expected_shapes[name]
             ):
                 raise ValueError(f"SONIC packed array {name!r} violates its shape/dtype contract")
-            setattr(self, name, array)
+            arrays[name] = array
+        for name, array in arrays.items():
+            # Materialize into a plain ndarray so hot-path gathers skip the
+            # ``np.memmap`` subclass dispatch; the disk format stays mmap-based.
+            setattr(self, name, np.array(array, copy=True))
 
         self.clip_offsets = np.zeros(self.num_clips, dtype=np.int32)
         if self.num_clips > 1:

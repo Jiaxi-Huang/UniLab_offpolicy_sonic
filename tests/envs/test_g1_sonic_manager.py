@@ -787,6 +787,98 @@ def test_sonic_manager_runtime_materializes_and_steps(monkeypatch, backend_type:
 
 
 @pytest.mark.parametrize("backend_type", ["mujoco", "motrix"])
+def test_sonic_reference_cache_matches_legacy_computation(monkeypatch, backend_type: str) -> None:
+    """The cold-path reference feature cache must reproduce the legacy math."""
+
+    monkeypatch.setattr(sonic_manager, "SonicPackedMotionLoader", _RuntimeMotionLoader)
+    config_dir = Path(__file__).parents[2] / "src" / "unilab" / "conf" / "flashsac"
+    with initialize_config_dir(config_dir=str(config_dir), version_base="1.3"):
+        hydra_cfg = compose(
+            config_name="config_sonic",
+            overrides=[f"task=g1_sonic/{backend_type}"],
+        )
+    env_cfg_override = BackendAdapter(
+        hydra_cfg, root_dir=Path(__file__).parents[2]
+    ).build_task_env_cfg_override()
+    params = env_cfg_override["commands"]["motion"]["params"]
+    params["motion_store_file"] = "synthetic"
+    params["sampling_mode"] = "start"
+    params["pose_range"] = {axis: [0.0, 0.0] for axis in ("x", "y", "z", "roll", "pitch", "yaw")}
+    params["velocity_range"] = {
+        axis: [0.0, 0.0] for axis in ("x", "y", "z", "roll", "pitch", "yaw")
+    }
+    params["joint_position_range"] = [0.0, 0.0]
+    params["joint_velocity_range"] = [0.0, 0.0]
+    env_cfg_override["observations"]["policy"]["terms"]["obs"]["sonic_noise"] = {"level": 0.0}
+    env = registry.make(
+        "G1SonicManager",
+        sim_backend=backend_type,
+        env_cfg_override=env_cfg_override,
+        num_envs=3,
+    )
+    try:
+        state = env.init_state()
+        motion = env.command_manager.get_term("motion")
+        rows = np.arange(env.num_envs, dtype=np.intp)
+
+        def _compare() -> None:
+            """Match the cold-path cache against the legacy on-the-fly math."""
+            frames = motion.sampler.current_frames
+            g1_future = motion.loader.future_indices(
+                frames, sonic_manager._G1_FUTURE_STRIDE, motion.cfg.num_future_frames
+            )
+            legacy_pos = motion.loader.joint_pos[g1_future][..., motion._policy_from_model]
+            legacy_vel = motion.loader.joint_vel[g1_future][..., motion._policy_from_model]
+            legacy_cmd = (
+                np.concatenate(
+                    (
+                        legacy_pos.reshape(len(frames), -1),
+                        legacy_vel.reshape(len(frames), -1),
+                    ),
+                    axis=-1,
+                )
+                .reshape(len(frames), motion.cfg.num_future_frames, 58)
+                .copy()
+            )
+            np.testing.assert_array_equal(motion.g1_command(rows), legacy_cmd)
+
+            smpl_future = motion.loader.future_indices(
+                frames, sonic_manager._SMPL_FUTURE_STRIDE, motion.cfg.num_future_frames
+            )
+            legacy_hum_quat = motion.loader.smpl_root_quat[smpl_future]
+            legacy_hum_joints = motion.loader.smpl_joints[smpl_future]
+            legacy_human_local = sonic_manager.np_quat_apply_batched(
+                sonic_manager.np_quat_conjugate_batched(legacy_hum_quat[:, :, None]),
+                legacy_hum_joints,
+            )
+            legacy_wrist = motion.loader.joint_pos[smpl_future][..., motion._policy_from_model][
+                ..., sonic_manager._WRIST_POLICY_INDICES
+            ]
+            smpl = motion.smpl_reference()
+            expected_human_local = legacy_human_local.reshape(
+                len(frames), motion.cfg.num_future_frames, 72
+            )
+            # The packed layout is [human_local | rot6d(human_relative) | wrist]
+            # per future frame; compare the cached gather against the fresh
+            # computation by rebuilding the pack with the legacy features.
+            root_quat = env.scene["robot"].data.root_link_quat_w
+            legacy_human_relative = sonic_manager.np_quat_mul_batched(
+                sonic_manager.np_quat_conjugate_batched(root_quat[:, None]), legacy_hum_quat
+            )
+            legacy_packed = sonic_manager._pack_smpl_reference(
+                expected_human_local, legacy_human_relative, legacy_wrist
+            ).astype(smpl.dtype, copy=False)
+            np.testing.assert_array_equal(smpl, legacy_packed)
+
+        _compare()
+        env.step(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32))
+        _compare()
+        assert state.obs["obs"].shape == (3, 2412)
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("backend_type", ["mujoco", "motrix"])
 def test_sonic_transition_uses_current_frame_for_reward_and_next_frame_for_observation(
     monkeypatch, backend_type: str
 ) -> None:

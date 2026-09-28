@@ -183,7 +183,7 @@ def test_packer_drops_continuity_fragments_shorter_than_history(tmp_path: Path) 
         )
 
 
-def test_packed_loader_matches_npz_loader_without_materializing_arrays(tmp_path: Path) -> None:
+def test_packed_loader_matches_npz_loader_and_materializes_arrays(tmp_path: Path) -> None:
     source, output = _build_store(tmp_path)
     backend = _Backend()
     legacy = SonicNpzMotionLoader(
@@ -209,9 +209,13 @@ def test_packed_loader_matches_npz_loader_without_materializing_arrays(tmp_path:
         "smpl_root_quat",
     ):
         packed_array = getattr(packed, name)
-        assert isinstance(packed_array, np.memmap)
-        assert not packed_array.flags.writeable
+        # The loader materializes plain in-memory arrays; the on-disk store
+        # keeps its read-only mmap format contract.
+        assert not isinstance(packed_array, np.memmap)
         np.testing.assert_array_equal(packed_array[frame_ids], getattr(legacy, name)[frame_ids])
+        on_disk = np.load(output / f"{name}.npy", mmap_mode="r", allow_pickle=False)
+        assert isinstance(on_disk, np.memmap)
+        assert not on_disk.flags.writeable
     np.testing.assert_array_equal(
         packed.future_indices(np.asarray([8, 20], dtype=np.int32), stride=2),
         [[8, 9, 9, 9, 9, 9, 9, 9, 9, 9], [20, 21, 21, 21, 21, 21, 21, 21, 21, 21]],

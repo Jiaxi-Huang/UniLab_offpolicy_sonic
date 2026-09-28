@@ -40,7 +40,7 @@ class NoiseConfig:
 
 
 from unilab.tasks.motion_tracking.common import rewards as motion_rewards
-from unilab.tasks.motion_tracking.common.motion_loader import MotionSampler
+from unilab.tasks.motion_tracking.common.motion_loader import MotionData, MotionSampler
 from unilab.utils.rotation import (
     np_quat_apply_batched,
     np_quat_apply_inverse_batched,
@@ -558,6 +558,10 @@ class SonicMotionCommand(CommandTerm):
             [G1_SONIC_JOINTS.index(name) for name in _SONIC_FOOT_JOINT_NAMES], dtype=np.intp
         )
         self.motion_data = loader.make_motion_data_buffer(env.num_envs)
+        self._motion_scratch = loader.make_motion_data_buffer(env.num_envs)
+        self._g1_command_cache: np.ndarray | None = None
+        self._g1_command_cache_step = -1
+        self._init_reference_feature_cache(loader)
         self.encoder_index = np.zeros((env.num_envs, 2), dtype=np.float32)
         self.encoder_index[:, 0] = 1.0
         self.clip_end = np.zeros(env.num_envs, dtype=np.bool_)
@@ -781,9 +785,17 @@ class SonicMotionCommand(CommandTerm):
             staged_ids = env_ids[staged]
             frames[staged] = self.sampler.set_clip_starts(staged_ids, staged_clips[staged])
             self._next_reset_clip_indices[staged_ids] = -1
-        self._refresh_motion(env_ids)
+        # One gather serves both the motion_data scatter and the local reset
+        # views; the previous form gathered the same frames twice.  The views
+        # stay valid until the next _gather_motion call, which nothing below
+        # triggers.
+        motion = self._gather_motion(frames)
+        self._scatter_motion(env_ids, motion)
+        # Reset rows carry freshly sampled frames: drop the step-keyed
+        # g1_command cache so the reset-path observation rebuild sees them.
+        self._g1_command_cache = None
+        self._g1_command_cache_step = -1
         self._sample_encoder(env_ids)
-        motion = self.loader.get_motion_at_frame(frames)
         self._running_ref_root_height[env_ids] = motion.body_pos_w[:, self.anchor_body_idx, 2]
         self._undesired_contact_history[env_ids] = False
         robot = self._env.scene[self.cfg.entity_name]
@@ -970,13 +982,26 @@ class SonicMotionCommand(CommandTerm):
         self._command[ids, 0] = self.sampler.current_frames[ids]
 
     def g1_command(self, rows: np.ndarray) -> np.ndarray:
+        # The policy reference term and the critic observation both evaluate
+        # the full batch within one update; the cached result is invalidated
+        # by reset_reference (frames are resampled there) and by the step
+        # counter, so subset callers always slice a fresh full-batch result.
+        step = self._env.common_step_counter
+        cached = self._g1_command_cache
+        if cached is not None and self._g1_command_cache_step == step:
+            return cached if len(rows) == len(cached) else cached[rows]
         frames = self.sampler.current_frames[rows]
         future = self.loader.future_indices(frames, _G1_FUTURE_STRIDE, self.cfg.num_future_frames)
-        pos = self.loader.joint_pos[future][..., self._policy_from_model]
-        vel = self.loader.joint_vel[future][..., self._policy_from_model]
-        return np.concatenate(
+        pos = self._ref_joint_pos_policy[future]
+        vel = self._ref_joint_vel_policy[future]
+        result = np.concatenate(
             (pos.reshape(len(rows), -1), vel.reshape(len(rows), -1)), axis=-1
         ).reshape(len(rows), self.cfg.num_future_frames, 58)
+        if len(rows) == self.num_envs:
+            result.setflags(write=False)
+            self._g1_command_cache = result
+            self._g1_command_cache_step = step
+        return result
 
     def g1_reference(self) -> np.ndarray:
         rows = np.arange(self.num_envs, dtype=np.intp)
@@ -997,17 +1022,12 @@ class SonicMotionCommand(CommandTerm):
             self.sampler.current_frames, _SMPL_FUTURE_STRIDE, self.cfg.num_future_frames
         )
         human_quat = self.loader.smpl_root_quat[future]
-        human_joints = self.loader.smpl_joints[future]
-        human_local = np_quat_apply_batched(
-            np_quat_conjugate_batched(human_quat[:, :, None]), human_joints
-        )
+        human_local = self._ref_smpl_human_local[future]
+        wrist = self._ref_wrist_policy[future]
         root_quat = self._env.scene["robot"].data.root_link_quat_w
         human_relative = np_quat_mul_batched(
             np_quat_conjugate_batched(root_quat[:, None]), human_quat
         )
-        wrist = self.loader.joint_pos[future][..., self._policy_from_model][
-            ..., _WRIST_POLICY_INDICES
-        ]
         return _pack_smpl_reference(
             human_local.reshape(self.num_envs, self.cfg.num_future_frames, 72),
             human_relative,
@@ -1030,9 +1050,49 @@ class SonicMotionCommand(CommandTerm):
             axis=-1,
         ).astype(np.float32, copy=False)
 
-    def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
-        rows = np.arange(self.num_envs, dtype=np.intp) if env_ids is None else env_ids
-        current = self.loader.get_motion_at_frame(self.sampler.current_frames[rows])
+    def _init_reference_feature_cache(self, loader: _SonicMotionLoader) -> None:
+        """Materialize per-frame reference features on the cold path.
+
+        Following the upstream motion-lib contract, every state-independent
+        quantity (policy-ordered joint columns, wrist columns, SMPL root-local
+        joints) is precomputed here once; the hot path keeps only the window
+        gathers and the two live-state quaternion products that depend on the
+        robot's current root orientation.
+        """
+        self._ref_joint_pos_policy = loader.joint_pos[:, self._policy_from_model]
+        self._ref_joint_vel_policy = loader.joint_vel[:, self._policy_from_model]
+        self._ref_wrist_policy = loader.joint_pos[:, self._policy_from_model][
+            :, _WRIST_POLICY_INDICES
+        ]
+        human_local = np.empty((loader.num_frames, 24, 3), dtype=loader.smpl_joints.dtype)
+        chunk_frames = 1 << 16
+        for start in range(0, loader.num_frames, chunk_frames):
+            stop = min(start + chunk_frames, loader.num_frames)
+            human_local[start:stop] = np_quat_apply_batched(
+                np_quat_conjugate_batched(loader.smpl_root_quat[start:stop, None]),
+                loader.smpl_joints[start:stop],
+            )
+        self._ref_smpl_human_local = human_local
+
+    def _gather_motion(self, frames: np.ndarray) -> MotionData:
+        """Gather motion rows into the reusable scratch buffer.
+
+        The returned fields are views into ``self._motion_scratch`` and stay
+        valid until the next gather; callers must copy anything they keep.
+        """
+        count = len(frames)
+        out = MotionData(
+            joint_pos=self._motion_scratch.joint_pos[:count],
+            joint_vel=self._motion_scratch.joint_vel[:count],
+            body_pos_w=self._motion_scratch.body_pos_w[:count],
+            body_quat_w=self._motion_scratch.body_quat_w[:count],
+            body_lin_vel_w=self._motion_scratch.body_lin_vel_w[:count],
+            body_ang_vel_w=self._motion_scratch.body_ang_vel_w[:count],
+        )
+        self.loader.get_motion_at_frame(frames, out=out)
+        return out
+
+    def _scatter_motion(self, rows: np.ndarray, motion: MotionData) -> None:
         for name in (
             "joint_pos",
             "joint_vel",
@@ -1041,7 +1101,11 @@ class SonicMotionCommand(CommandTerm):
             "body_lin_vel_w",
             "body_ang_vel_w",
         ):
-            getattr(self.motion_data, name)[rows] = getattr(current, name)
+            getattr(self.motion_data, name)[rows] = getattr(motion, name)
+
+    def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
+        rows = np.arange(self.num_envs, dtype=np.intp) if env_ids is None else env_ids
+        self._scatter_motion(rows, self._gather_motion(self.sampler.current_frames[rows]))
 
     def _sample_encoder(self, env_ids: np.ndarray) -> None:
         mode = self.cfg.encoder_sampling
