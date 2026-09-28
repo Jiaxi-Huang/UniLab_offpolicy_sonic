@@ -787,6 +787,61 @@ def test_sonic_manager_runtime_materializes_and_steps(monkeypatch, backend_type:
 
 
 @pytest.mark.parametrize("backend_type", ["mujoco", "motrix"])
+def test_sonic_reference_terms_are_row_scoped_on_reset(monkeypatch, backend_type: str) -> None:
+    """A subset reset must recompute only the reset rows of the reference terms."""
+
+    monkeypatch.setattr(sonic_manager, "SonicPackedMotionLoader", _RuntimeMotionLoader)
+    config_dir = Path(__file__).parents[2] / "src" / "unilab" / "conf" / "flashsac"
+    with initialize_config_dir(config_dir=str(config_dir), version_base="1.3"):
+        hydra_cfg = compose(
+            config_name="config_sonic",
+            overrides=[f"task=g1_sonic/{backend_type}"],
+        )
+    env_cfg_override = BackendAdapter(
+        hydra_cfg, root_dir=Path(__file__).parents[2]
+    ).build_task_env_cfg_override()
+    params = env_cfg_override["commands"]["motion"]["params"]
+    params["motion_store_file"] = "synthetic"
+    params["sampling_mode"] = "start"
+    params["pose_range"] = {axis: [0.0, 0.0] for axis in ("x", "y", "z", "roll", "pitch", "yaw")}
+    params["velocity_range"] = {
+        axis: [0.0, 0.0] for axis in ("x", "y", "z", "roll", "pitch", "yaw")
+    }
+    params["joint_position_range"] = [0.0, 0.0]
+    params["joint_velocity_range"] = [0.0, 0.0]
+    env_cfg_override["observations"]["policy"]["terms"]["obs"]["sonic_noise"] = {"level": 0.0}
+    env = registry.make(
+        "G1SonicManager",
+        sim_backend=backend_type,
+        env_cfg_override=env_cfg_override,
+        num_envs=3,
+    )
+    try:
+        env.init_state()
+        env.step(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32))
+        motion = env.command_manager.get_term("motion")
+        term = env.observation_manager.get_term_cfg("policy", "g1_reference").func
+        assert hasattr(term, "reset"), "g1_reference term must be a row-scoped class term"
+
+        full = term(env).copy()
+        # Simulate the observation manager's reset stamping for row 1 only,
+        # then advance row 1's reference so a fresh row must differ.
+        term.reset(np.asarray([1], dtype=np.intp))
+        motion.sampler.current_frames[1] = np.minimum(
+            motion.sampler.current_frames[1] + 3, motion.loader.clip_end_frames[0]
+        )
+        motion._g1_command_cache = None
+        out = term(env)
+        np.testing.assert_array_equal(out[[0, 2]], full[[0, 2]])
+        np.testing.assert_array_equal(
+            out[1], motion.g1_reference(np.asarray([1], dtype=np.intp))[0]
+        )
+        assert not term._reset_pending.any()
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("backend_type", ["mujoco", "motrix"])
 def test_sonic_reference_cache_matches_legacy_computation(monkeypatch, backend_type: str) -> None:
     """The cold-path reference feature cache must reproduce the legacy math."""
 

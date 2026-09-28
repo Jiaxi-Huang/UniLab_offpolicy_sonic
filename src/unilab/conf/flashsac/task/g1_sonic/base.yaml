@@ -169,8 +169,8 @@ env:
           _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicObservationTermCfg
           func: unilab.tasks.motion_tracking.g1.sonic_manager.SonicActorObservation
           sonic_history_length: ${algo.sonic.model.num_future_frames}
-        g1_reference: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_g1_reference}
-        smpl_reference: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_smpl_reference}
+        g1_reference: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.SonicG1ReferenceObservation}
+        smpl_reference: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.SonicSmplReferenceObservation}
         encoder_index: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_encoder_index}
     critic:
       _target_: unilab.managers.ObservationGroupCfg

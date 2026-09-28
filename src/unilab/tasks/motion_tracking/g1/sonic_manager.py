@@ -1003,12 +1003,12 @@ class SonicMotionCommand(CommandTerm):
             self._g1_command_cache_step = step
         return result
 
-    def g1_reference(self) -> np.ndarray:
-        rows = np.arange(self.num_envs, dtype=np.intp)
+    def g1_reference(self, rows: np.ndarray | None = None) -> np.ndarray:
+        rows = np.arange(self.num_envs, dtype=np.intp) if rows is None else rows
         future = self.loader.future_indices(
-            self.sampler.current_frames, _G1_FUTURE_STRIDE, self.cfg.num_future_frames
+            self.sampler.current_frames[rows], _G1_FUTURE_STRIDE, self.cfg.num_future_frames
         )
-        root_quat = self._env.scene["robot"].data.root_link_quat_w
+        root_quat = self._env.scene["robot"].data.root_link_quat_w[rows]
         future_root_quat = self.loader.body_quat_w[future, self.anchor_body_idx]
         relative_root = np_quat_mul_batched(
             np_quat_conjugate_batched(root_quat[:, None]), future_root_quat
@@ -1017,19 +1017,20 @@ class SonicMotionCommand(CommandTerm):
             get_global_dtype(), copy=False
         )
 
-    def smpl_reference(self) -> np.ndarray:
+    def smpl_reference(self, rows: np.ndarray | None = None) -> np.ndarray:
+        rows = np.arange(self.num_envs, dtype=np.intp) if rows is None else rows
         future = self.loader.future_indices(
-            self.sampler.current_frames, _SMPL_FUTURE_STRIDE, self.cfg.num_future_frames
+            self.sampler.current_frames[rows], _SMPL_FUTURE_STRIDE, self.cfg.num_future_frames
         )
         human_quat = self.loader.smpl_root_quat[future]
         human_local = self._ref_smpl_human_local[future]
         wrist = self._ref_wrist_policy[future]
-        root_quat = self._env.scene["robot"].data.root_link_quat_w
+        root_quat = self._env.scene["robot"].data.root_link_quat_w[rows]
         human_relative = np_quat_mul_batched(
             np_quat_conjugate_batched(root_quat[:, None]), human_quat
         )
         return _pack_smpl_reference(
-            human_local.reshape(self.num_envs, self.cfg.num_future_frames, 72),
+            human_local.reshape(len(rows), self.cfg.num_future_frames, 72),
             human_relative,
             wrist,
         ).astype(get_global_dtype(), copy=False)
@@ -1528,6 +1529,61 @@ class SonicCriticObservation(_HistoryObservation):
         return self._output
 
 
+class _ResetScopedReferenceObservation:
+    """Row-scoped observation base for the SONIC reference terms.
+
+    Mirrors the ``_HistoryObservation`` reset contract: the observation
+    manager stamps ``reset(env_ids)`` before the reset-path rebuild, so the
+    term recomputes only the reset rows into a persistent full-batch buffer
+    instead of re-evaluating the (expensive) reference terms for every
+    environment on every reset.
+    """
+
+    def __init__(self, cfg: ObservationTermCfg, env) -> None:
+        self.cfg = cfg
+        self._env = env
+        self._output: np.ndarray | None = None
+        self._reset_pending = np.zeros(env.num_envs, dtype=bool)
+
+    def reset(self, env_ids: np.ndarray | slice | None) -> None:
+        self._reset_pending[slice(None) if env_ids is None else env_ids] = True
+
+    def _rows(self) -> tuple[np.ndarray, bool]:
+        pending = np.flatnonzero(self._reset_pending)
+        if len(pending):
+            return pending, True
+        return np.arange(self._env.num_envs, dtype=np.intp), False
+
+    def _compute(self, rows: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def __call__(self, env) -> np.ndarray:
+        rows, reset = self._rows()
+        if not reset:
+            # The per-step path returns the freshly computed array directly;
+            # the persistent buffer only exists to serve reset-path calls,
+            # which must return a full-batch array while recomputing a subset.
+            return self._compute(rows)
+        result = self._compute(rows)
+        if self._output is None or self._output.shape[1:] != result.shape[1:]:
+            self._output = np.zeros(
+                (self._env.num_envs, *result.shape[1:]), dtype=get_global_dtype()
+            )
+        self._output[rows] = result
+        self._reset_pending[rows] = False
+        return self._output
+
+
+class SonicG1ReferenceObservation(_ResetScopedReferenceObservation):
+    def _compute(self, rows: np.ndarray) -> np.ndarray:
+        return _motion_command(self._env).g1_reference(rows)
+
+
+class SonicSmplReferenceObservation(_ResetScopedReferenceObservation):
+    def _compute(self, rows: np.ndarray) -> np.ndarray:
+        return _motion_command(self._env).smpl_reference(rows)
+
+
 def sonic_g1_reference(env) -> np.ndarray:
     return _motion_command(env).g1_reference()
 
@@ -1655,8 +1711,8 @@ def make_g1_sonic_manager_cfg() -> ManagerBasedRlEnvCfg:
     """Return the empty manager config; Hydra owns all SONIC term declarations."""
     policy: dict[str, ObservationTermCfg | None] = {
         "obs": ObservationTermCfg(func=SonicActorObservation),
-        "g1_reference": ObservationTermCfg(func=sonic_g1_reference),
-        "smpl_reference": ObservationTermCfg(func=sonic_smpl_reference),
+        "g1_reference": ObservationTermCfg(func=SonicG1ReferenceObservation),
+        "smpl_reference": ObservationTermCfg(func=SonicSmplReferenceObservation),
         "encoder_index": ObservationTermCfg(func=sonic_encoder_index),
     }
     return ManagerBasedRlEnvCfg(
