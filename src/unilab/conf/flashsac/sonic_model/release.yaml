@@ -7,8 +7,8 @@ g1_frame_dim: 64
 smpl_frame_dim: 84
 action_dim: 29
 # SONIC FlashSAC policy and critic widths for the release-capacity profile.
-actor_hidden_dim: 512 #[512->2048->512]*num_blocks
-critic_hidden_dim: 512 #[512->2048->512]*num_blocks
+actor_hidden_dim: 512 #1024 #[512->2048->512]*num_blocks
+critic_hidden_dim: 512 #1024 #[512->2048->512]*num_blocks
 g1_encoder_hidden_dims: [2048, 1024, 512, 512]
 smpl_encoder_hidden_dims: [2048, 1024, 512, 512]
 g1_motion_decoder_hidden_dims: [2048, 1024, 512, 512]

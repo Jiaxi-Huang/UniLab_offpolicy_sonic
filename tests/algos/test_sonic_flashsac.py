@@ -4,7 +4,6 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
-
 from uni_rl.algos.flash_sac.layers import safe_tanh_log_det_jacobian
 from uni_rl.algos.sonic import SonicAuxLossConfig, SonicModelConfig
 from uni_rl.algos.sonic.checkpoint import (
@@ -332,8 +331,8 @@ def test_sonic_flashsac_learner_updates_and_marks_checkpoint(tmp_path: Path) -> 
 
 
 def test_sonic_mujoco_builder_uses_shared_multi_gpu_contract(monkeypatch, tmp_path: Path) -> None:
-    from unilab.training import sonic_double_buffer as owner_module
     from unilab.training import offpolicy_sonic
+    from unilab.training import sonic_double_buffer as owner_module
 
     cfg = _training_config("training.devices=[0,1]", "training.nan_guard.enabled=false")
     monkeypatch.setattr(offpolicy_sonic.os, "cpu_count", lambda: 128)
@@ -355,6 +354,61 @@ def test_sonic_mujoco_builder_uses_shared_multi_gpu_contract(monkeypatch, tmp_pa
     assert kwargs["dp_sync"].rank == 0
     assert kwargs["dp_sync"].backend == "nccl"
     assert "max_episode_seconds" not in kwargs["env_cfg_override"]
+
+
+def test_sonic_builder_forwards_compile_flags_to_learner(monkeypatch) -> None:
+    """The owner builder must hand the compile knobs to SonicFlashSACLearner.
+
+    ``compile_full_objectives`` was previously dropped on this path, silently
+    keeping SONIC on the loss-only compile path regardless of the owner YAML.
+    """
+
+    from gymnasium.spaces import Box
+
+    from unilab.training import sonic_double_buffer as owner_module
+
+    cfg = _training_config()
+    model = owner_module._model_config(cfg)
+    expected_obs_dim = model.actor_obs_dim + model.g1_input_dim + model.smpl_input_dim + 2
+
+    class _FakeEnv:
+        obs_groups_spec = object()
+        action_space = Box(-1.0, 1.0, (model.action_dim,))
+
+        def close(self) -> None:
+            return None
+
+    learner_kwargs: dict = {}
+
+    class _FakeLearner:
+        def __init__(self, **kwargs) -> None:
+            learner_kwargs.update(kwargs)
+
+    class _FakeRunner:
+        def __init__(self, **kwargs) -> None:
+            learner_kwargs["runner_kwargs"] = kwargs
+
+    monkeypatch.setattr(owner_module, "create_env", lambda *args, **kwargs: _FakeEnv())
+    monkeypatch.setattr(owner_module, "registry_env_factory", lambda *args, **kwargs: object())
+    monkeypatch.setattr(owner_module, "ensure_registries", lambda: None)
+    monkeypatch.setattr(owner_module, "apply_training_seed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(owner_module, "SonicFlashSACLearner", _FakeLearner)
+    monkeypatch.setattr(owner_module, "DoubleBufferOffPolicyRunner", _FakeRunner)
+    monkeypatch.setattr(
+        "uni_rl.utils.observations.get_obs_dims",
+        lambda spec: (expected_obs_dim, 24),
+    )
+
+    runner = owner_module.build_sonic_flashsac_runner(
+        cfg,
+        env_cfg_override={},
+        replay_prefetch_mode="one_tick",
+        device="cuda:0",
+    )
+
+    assert isinstance(runner, _FakeRunner)
+    assert learner_kwargs["use_compile"] is True
+    assert learner_kwargs["compile_full_objectives"] is True
 
 
 def test_sonic_play_time_limit_override_does_not_mutate_training_override(monkeypatch) -> None:

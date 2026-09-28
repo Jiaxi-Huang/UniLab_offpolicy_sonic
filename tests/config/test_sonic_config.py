@@ -72,6 +72,12 @@ def test_sonic_training_action_scale_matches_canonical_g1_contract() -> None:
     assert float(cfg.env.actions.joint_pos.scale) == pytest.approx(2.0)
 
 
+def test_sonic_training_compose_enables_full_objective_compile() -> None:
+    cfg = _compose("task=g1_sonic/mujoco")
+    assert cfg.algo.algo_params.use_compile is True
+    assert cfg.algo.algo_params.compile_full_objectives is True
+
+
 def test_sonic_base_randomization_matches_gear_sonic_semantics() -> None:
     cfg = _compose("task=g1_sonic/base")
     motion = cfg.env.commands.motion.params

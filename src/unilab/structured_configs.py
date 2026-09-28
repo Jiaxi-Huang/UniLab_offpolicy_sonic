@@ -94,6 +94,7 @@ class FlashSACAlgoParams:
     n_step: int = 1
     amp_dtype: str = "auto"
     use_compile: bool = True
+    compile_full_objectives: bool = False
     use_cuda_graph_critic: bool = False
     use_cuda_graph_actor: bool = False
     use_cuda_graph_critic_packed_staging: bool = False

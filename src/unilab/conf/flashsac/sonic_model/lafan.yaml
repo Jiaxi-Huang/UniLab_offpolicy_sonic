@@ -1,18 +1,18 @@
 # @package algo.sonic.model
 # LAFAN1 uses the same G1+SMPL observation contract as the release model.
 # LAFAN1 is substantially smaller than the release motion collection, so use
-# an intermediate-capacity backbone: larger than the one/two-clip smoke model
-# while avoiding the release model's 23M-parameter actor.
-num_future_frames: 4
+num_future_frames: 10
 num_tokens: 2
-token_dim: 8
+token_dim: 32
 fsq_levels: 32
 g1_frame_dim: 64
 smpl_frame_dim: 84
 action_dim: 29
-actor_hidden_dim: 256
-critic_hidden_dim: 256
-g1_encoder_hidden_dims: [512, 256]
-smpl_encoder_hidden_dims: [512, 256]
-g1_motion_decoder_hidden_dims: [512, 256]
-g1_control_decoder_hidden_dims: [1024, 512]
+# SONIC FlashSAC policy and critic widths for the release-capacity profile.
+actor_hidden_dim: 512 #[512->2048->512]*num_blocks
+critic_hidden_dim: 512 #[512->2048->512]*num_blocks
+g1_encoder_hidden_dims: [1024, 512, 512]
+smpl_encoder_hidden_dims: [1024, 512, 512]
+g1_motion_decoder_hidden_dims: [1024, 512, 512]
+#used when play SONIC-NVIDIA checkpoint
+g1_control_decoder_hidden_dims: [1024, 1024, 512, 512]

@@ -77,6 +77,7 @@ def test_flashsac_config_defaults():
     assert cfg.algo_params.normalize_reward is True
     assert cfg.algo_params.amp_dtype == "auto"
     assert cfg.algo_params.use_compile is True
+    assert cfg.algo_params.compile_full_objectives is False
 
 
 def test_ppo_config_defaults():
