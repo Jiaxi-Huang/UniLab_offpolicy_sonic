@@ -96,6 +96,10 @@ from .sonic_data import (
     _SonicMotionLoader,
     np_quat_from_euler_xyz,
 )
+from .sonic_kernels import (
+    configure_motion_kernel_runtime,
+    push_history_and_assemble_kernel,
+)
 
 G1_SONIC_JOINTS = G1_POLICY_JOINT_NAMES
 G1_SONIC_ACTION_SCALE = 2.0
@@ -1327,6 +1331,10 @@ class SonicJointPositionAction(JointPositionAction):
 
 
 class _HistoryObservation:
+    # Released checkpoint field slices of the proprioception frame; the output
+    # layout concatenates these blocks in order, each block frame-major.
+    _history_slices: tuple[tuple[int, int], ...] = ()
+
     def __init__(self, cfg: ObservationTermCfg, env, width: int):
         self.cfg = cfg
         self._env = env
@@ -1345,6 +1353,19 @@ class _HistoryObservation:
         )
         self._output = np.zeros((env.num_envs, width), dtype=get_global_dtype())
         self._reset_pending = np.zeros(env.num_envs, dtype=bool)
+        # Physical ring head over the frame axis; the per-step push writes the
+        # newest frame here and advances, replacing the legacy full-buffer roll.
+        self._head = 0
+        widths = [end - start for start, end in self._history_slices]
+        block_starts = [0]
+        for slice_width in widths[:-1]:
+            block_starts.append(block_starts[-1] + slice_width * history_length)
+        self._slice_starts = np.asarray(block_starts, dtype=np.intp)
+        self._slice_widths = np.asarray(widths, dtype=np.intp)
+        self._slice_columns = np.asarray(
+            [start for start, _ in self._history_slices], dtype=np.intp
+        )
+        configure_motion_kernel_runtime()
 
     def reset(self, env_ids: np.ndarray | slice | None) -> None:
         self._reset_pending[slice(None) if env_ids is None else env_ids] = True
@@ -1355,14 +1376,28 @@ class _HistoryObservation:
             return pending, True
         return np.arange(self._env.num_envs, dtype=np.intp), False
 
-    def _push(self, rows: np.ndarray, values: np.ndarray, reset: bool) -> np.ndarray:
+    def _push(self, rows: np.ndarray, values: np.ndarray, reset: bool, out_offset: int) -> None:
+        """Push the newest proprioception frame and assemble ``self._output``.
+
+        The fused kernel ring-writes ``values`` (all environments on the
+        per-step call, only ``rows`` on the reset call) and writes the
+        history block of the output for ``rows`` in logical oldest-to-newest
+        order, replacing the legacy roll + slice-reshape + concatenate chain.
+        """
+        self._head = push_history_and_assemble_kernel(
+            self._history,
+            values,
+            rows.astype(np.intp, copy=False),
+            reset,
+            self._head,
+            self._output,
+            out_offset,
+            self._slice_starts,
+            self._slice_widths,
+            self._slice_columns,
+        )
         if reset:
-            self._history[rows] = values[:, None, :]
             self._reset_pending[rows] = False
-        else:
-            self._history[:, :-1] = self._history[:, 1:]
-            self._history[:, -1] = values
-        return self._history[rows]
 
 
 @dataclass(kw_only=True)
@@ -1380,6 +1415,10 @@ class SonicObservationTermCfg(ObservationTermCfg):
 
 
 class SonicActorObservation(_HistoryObservation):
+    # Motrix PPO ``local_dir_hist`` order: angular velocity, joint position,
+    # joint velocity, action, gravity (gravity last).
+    _history_slices = ((0, 3), (3, 32), (32, 61), (61, 90), (90, 93))
+
     def __init__(self, cfg: ObservationTermCfg, env):
         if not isinstance(cfg, SonicObservationTermCfg):
             raise TypeError("SonicActorObservation requires SonicObservationTermCfg")
@@ -1421,19 +1460,10 @@ class SonicActorObservation(_HistoryObservation):
             axis=-1,
             dtype=np.float32,
         )
-        history = self._push(rows, values, reset)
-        # Keep the upstream Motrix PPO ``local_dir_hist`` term order exactly:
-        # base_ang_vel, joint_pos, joint_vel, actions, gravity (gravity last).
-        self._output[rows] = np.concatenate(
-            (
-                history[:, :, :3].reshape(len(rows), -1),
-                history[:, :, 3:32].reshape(len(rows), -1),
-                history[:, :, 32:61].reshape(len(rows), -1),
-                history[:, :, 61:90].reshape(len(rows), -1),
-                history[:, :, 90:93].reshape(len(rows), -1),
-            ),
-            axis=-1,
-        )
+        # The fused kernel ring-writes the newest frame and assembles the
+        # whole (history-major) actor output in one pass; the per-frame value
+        # order stays base_ang_vel, joint_pos, joint_vel, actions, gravity.
+        self._push(rows, values, reset, out_offset=0)
         return self._output
 
     def _add_noise(self, value: np.ndarray, scale: float) -> np.ndarray:
@@ -1448,6 +1478,8 @@ class SonicActorObservation(_HistoryObservation):
 
 
 class SonicCriticObservation(_HistoryObservation):
+    _history_slices = ((0, 3), (3, 6), (6, 35), (35, 64), (64, 93))
+
     def __init__(self, cfg: ObservationTermCfg, env):
         history_length = int(getattr(cfg, "sonic_history_length", _DEFAULT_REFERENCE_FRAMES))
         if history_length <= 0:
@@ -1510,22 +1542,20 @@ class SonicCriticObservation(_HistoryObservation):
         values = np.concatenate(
             (linvel, gyro, joint_pos, joint_vel, action), axis=-1, dtype=np.float32
         )
-        history = self._push(rows, values, reset)
-        self._output[rows] = np.concatenate(
+        # The command/anchor/body block leads; the fused kernel fills the
+        # trailing history block in one pass.
+        history_offset = self._output.shape[1] - self._history.shape[1] * _PROPRIO_FRAME_DIM
+        self._output[rows, :history_offset] = np.concatenate(
             (
                 command.reshape(len(rows), -1),
                 anchor_pos,
                 anchor_ori,
                 body_pos_b.reshape(len(rows), -1),
                 body_ori_b.reshape(len(rows), -1),
-                history[:, :, :3].reshape(len(rows), -1),
-                history[:, :, 3:6].reshape(len(rows), -1),
-                history[:, :, 6:35].reshape(len(rows), -1),
-                history[:, :, 35:64].reshape(len(rows), -1),
-                history[:, :, 64:93].reshape(len(rows), -1),
             ),
             axis=-1,
         )
+        self._push(rows, values, reset, out_offset=history_offset)
         return self._output
 
 
