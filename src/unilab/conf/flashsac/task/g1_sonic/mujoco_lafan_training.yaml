@@ -8,7 +8,7 @@ defaults:
 
 training:
   sim_backend: mujoco
-  training.devices: [0,1,2,3]
+  devices: [0,1,2,3]
 algo:
   num_envs: 4096
   batch_size: 2048
