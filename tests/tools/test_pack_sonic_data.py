@@ -222,6 +222,43 @@ def test_packed_loader_matches_npz_loader_and_materializes_arrays(tmp_path: Path
     )
 
 
+def test_packed_loader_subset_matches_selected_clip_rows(tmp_path: Path) -> None:
+    source, output = _build_store(tmp_path)
+    backend = _Backend()
+    full = SonicPackedMotionLoader(output, backend=backend, body_names=_BODY_NAMES)
+    selection = np.asarray([1, 0])
+    subset = SonicPackedMotionLoader(
+        output, backend=backend, body_names=_BODY_NAMES, clip_indices=selection
+    )
+
+    assert subset.num_clips == 2
+    assert subset.num_frames == 22
+    np.testing.assert_array_equal(subset.clip_lengths, [12, 10])
+    np.testing.assert_array_equal(subset.clip_offsets, [0, 12])
+    np.testing.assert_array_equal(subset.clip_end_frames, [11, 21])
+    np.testing.assert_array_equal(subset.subset_clip_indices, selection)
+    np.testing.assert_array_equal(full.subset_clip_indices, [0, 1])
+    rows = np.concatenate((np.arange(10, 22), np.arange(0, 10)))
+    for name in ("joint_pos", "joint_vel", "body_pos_w", "smpl_joints", "smpl_root_quat"):
+        np.testing.assert_array_equal(getattr(subset, name), getattr(full, name)[rows])
+    # Window clamping follows each loader's own clip-axis semantics: the
+    # subset clip 0 end (11) and clip 1 end (21) both clamp like their full
+    # -store counterparts (21 and 9).
+    np.testing.assert_array_equal(
+        subset.future_indices(np.asarray([11, 21], dtype=np.int32), stride=1),
+        [[11] * 10, [21] * 10],
+    )
+
+    with pytest.raises(ValueError, match="clip_indices"):
+        SonicPackedMotionLoader(
+            output, backend=backend, body_names=_BODY_NAMES, clip_indices=np.asarray([])
+        )
+    with pytest.raises(ValueError, match="clip_indices"):
+        SonicPackedMotionLoader(
+            output, backend=backend, body_names=_BODY_NAMES, clip_indices=np.asarray([0, 2])
+        )
+
+
 def test_packed_store_is_versioned_and_refuses_existing_output(tmp_path: Path) -> None:
     source, output = _build_store(tmp_path)
     with pytest.raises(FileExistsError, match="already exists"):

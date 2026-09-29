@@ -95,6 +95,7 @@ from .sonic_data import (
     _root_local_proprioception,
     _SonicMotionLoader,
     np_quat_from_euler_xyz,
+    packed_store_clip_count,
 )
 from .sonic_kernels import (
     configure_motion_kernel_runtime,
@@ -223,6 +224,14 @@ class SonicMotionCommandParamsCfg:
     smpl_motion_file: str | list[str] = ""
     motion_store_file: str = ""
     reference_format: Literal["auto", "raw", "npz", "packed"] = "auto"
+    # Subset loading for oversized packed training stores (upstream motion-lib
+    # contract): materialize only this many uniformly-sampled clips as the
+    # working set and rotate it every ``clip_rotation_interval_steps``
+    # control steps.  None keeps the legacy full-store load; rotation
+    # requires an active subset (``max_loaded_clips`` smaller than the
+    # store's clip count).
+    max_loaded_clips: int | None = None
+    clip_rotation_interval_steps: int | None = None
     body_names: tuple[str, ...] = G1_SONIC_BODY_NAMES
     anchor_body_name: str = "pelvis"
     ee_body_names: tuple[str, ...] = G1_SONIC_EE_BODY_NAMES
@@ -416,6 +425,12 @@ class SonicMotionCommandCfg(CommandTermCfg):
                     raise ValueError(f"SONIC {name}.{axis} must be a finite (lower, upper) range")
         if self.anchor_body_name not in self.body_names:
             raise ValueError("SONIC anchor_body_name must be present in body_names")
+        for name in ("max_loaded_clips", "clip_rotation_interval_steps"):
+            value = getattr(self.params, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"SONIC {name} must be None or a positive integer")
         if tuple(self.body_names) != G1_SONIC_BODY_NAMES:
             raise ValueError("SONIC body_names must preserve the released body order")
         if any(name not in self.body_names for name in self.ee_body_names):
@@ -501,15 +516,53 @@ class SonicMotionCommand(CommandTerm):
                     if any(str(value).lower().endswith(".csv") for value in candidates)
                     else "npz"
                 )
+        self._clip_subset_size: int | None = None
+        self._clip_rotation_interval: int | None = None
+        self._rotation_step_counter = 0
+        self._clip_rotations = 0
+        self._packed_backend = None
         if reference_format == "packed":
             if not task_cfg.motion_store_file:
                 raise ValueError("SONIC packed references require motion_store_file")
-            loader = SonicPackedMotionLoader(
-                task_cfg.motion_store_file,
-                backend=backend,
-                body_names=task_cfg.body_names,
-            )
+            self._packed_backend = backend
+            max_loaded = task_cfg.max_loaded_clips
+            # The manifest is only consulted when a subset is requested; the
+            # default full-load path stays loader-implementation-agnostic.
+            if max_loaded is None or max_loaded >= packed_store_clip_count(
+                task_cfg.motion_store_file
+            ):
+                loader = SonicPackedMotionLoader(
+                    task_cfg.motion_store_file,
+                    backend=backend,
+                    body_names=task_cfg.body_names,
+                )
+            else:
+                self._clip_subset_size = int(max_loaded)
+                loader = SonicPackedMotionLoader(
+                    task_cfg.motion_store_file,
+                    backend=backend,
+                    body_names=task_cfg.body_names,
+                    clip_indices=np.asarray(
+                        env.rng.choice(
+                            packed_store_clip_count(task_cfg.motion_store_file),
+                            size=max_loaded,
+                            replace=False,
+                        )
+                    ),
+                )
+            if task_cfg.clip_rotation_interval_steps is not None:
+                if self._clip_subset_size is None:
+                    raise ValueError(
+                        "SONIC clip_rotation_interval_steps requires an active "
+                        "max_loaded_clips subset smaller than the store"
+                    )
+                self._clip_rotation_interval = int(task_cfg.clip_rotation_interval_steps)
         else:
+            if (
+                task_cfg.max_loaded_clips is not None
+                or task_cfg.clip_rotation_interval_steps is not None
+            ):
+                raise ValueError("SONIC clip subsetting requires a packed motion store")
             if not task_cfg.motion_file or not task_cfg.smpl_motion_file:
                 raise ValueError(
                     "G1SonicManager requires motion_store_file or paired "
@@ -523,27 +576,7 @@ class SonicMotionCommand(CommandTerm):
                 body_names=task_cfg.body_names,
             )
         self.loader: _SonicMotionLoader = loader
-        self.sampler = MotionSampler(
-            loader,
-            task_cfg.sampling_mode,
-            env.num_envs,
-            # Runtime test loaders and legacy packed stores may omit fps;
-            # SONIC references are standardized at 50 Hz.
-            bin_count=int(loader.num_frames // getattr(loader, "fps", 50)) + 1,
-            adaptive_lambda=task_cfg.adaptive_lambda,
-            adaptive_kernel_size=task_cfg.adaptive_kernel_size,
-            adaptive_uniform_ratio=task_cfg.adaptive_uniform_ratio,
-            adaptive_alpha=task_cfg.adaptive_alpha,
-            adaptive_failure_stat=task_cfg.adaptive_failure_stat,
-            adaptive_failure_prior=task_cfg.adaptive_failure_prior,
-            adaptive_pre_failure_window=task_cfg.adaptive_pre_failure_window,
-            adaptive_failure_rate_max_over_mean=task_cfg.adaptive_failure_rate_max_over_mean,
-            adaptive_sampling_update_interval=task_cfg.adaptive_sampling_update_interval,
-            adaptive_attribution=task_cfg.adaptive_attribution,
-            adaptive_max_prob_per_motion=task_cfg.adaptive_max_prob_per_motion,
-            start_ratio=task_cfg.sampling_start_ratio,
-            rng=env.rng,
-        )
+        self.sampler = self._build_sampler(loader)
         self.anchor_body_idx = task_cfg.body_names.index(task_cfg.anchor_body_name)
         self.ee_body_indices = np.asarray(
             [task_cfg.body_names.index(name) for name in task_cfg.ee_body_names], dtype=np.intp
@@ -1055,6 +1088,60 @@ class SonicMotionCommand(CommandTerm):
             axis=-1,
         ).astype(np.float32, copy=False)
 
+    def _build_sampler(self, loader: _SonicMotionLoader) -> MotionSampler:
+        task_cfg = self.cfg
+        return MotionSampler(
+            loader,
+            task_cfg.sampling_mode,
+            self.num_envs,
+            # Runtime test loaders and legacy packed stores may omit fps;
+            # SONIC references are standardized at 50 Hz.
+            bin_count=int(loader.num_frames // getattr(loader, "fps", 50)) + 1,
+            adaptive_lambda=task_cfg.adaptive_lambda,
+            adaptive_kernel_size=task_cfg.adaptive_kernel_size,
+            adaptive_uniform_ratio=task_cfg.adaptive_uniform_ratio,
+            adaptive_alpha=task_cfg.adaptive_alpha,
+            adaptive_failure_stat=task_cfg.adaptive_failure_stat,
+            adaptive_failure_prior=task_cfg.adaptive_failure_prior,
+            adaptive_pre_failure_window=task_cfg.adaptive_pre_failure_window,
+            adaptive_failure_rate_max_over_mean=task_cfg.adaptive_failure_rate_max_over_mean,
+            adaptive_sampling_update_interval=task_cfg.adaptive_sampling_update_interval,
+            adaptive_attribution=task_cfg.adaptive_attribution,
+            adaptive_max_prob_per_motion=task_cfg.adaptive_max_prob_per_motion,
+            start_ratio=task_cfg.sampling_start_ratio,
+            rng=self._env.rng,
+        )
+
+    def rotate_clip_subset(self) -> None:
+        """Swap in a fresh uniformly-sampled clip working set (wrap-style).
+
+        Rebuilds the loader, sampler, and derived reference features for the
+        new subset, then teleports every environment onto it through
+        ``reset_reference`` — the same mid-episode teleport the wrap mode
+        applies on clip exhaustion.  Adaptive-sampling statistics restart
+        from their prior on each rotation.  No-op without an active subset.
+        """
+        if self._clip_subset_size is None or self._packed_backend is None:
+            return
+        task_cfg = self.cfg
+        total_clips = packed_store_clip_count(task_cfg.motion_store_file)
+        loader = SonicPackedMotionLoader(
+            task_cfg.motion_store_file,
+            backend=self._packed_backend,
+            body_names=task_cfg.body_names,
+            clip_indices=np.asarray(
+                self._env.rng.choice(total_clips, size=self._clip_subset_size, replace=False)
+            ),
+        )
+        self.loader = loader
+        self.sampler = self._build_sampler(loader)
+        self._next_reset_clip_indices.fill(-1)
+        self._g1_command_cache = None
+        self._g1_command_cache_step = -1
+        self._init_reference_feature_cache(loader)
+        self._clip_rotations += 1
+        self.reset_reference(np.arange(self.num_envs, dtype=np.int32))
+
     def _init_reference_feature_cache(self, loader: _SonicMotionLoader) -> None:
         """Materialize per-frame reference features on the cold path.
 
@@ -1159,6 +1246,8 @@ class SonicMotionCommand(CommandTerm):
                 "sampling_failure_count_total": sampler.sampling_failure_count_total,
                 "sampling_visit_count_total": sampler.sampling_visit_count_total,
                 "sampling_uniform_mass_actual": sampler.sampling_uniform_mass_actual,
+                "motion_subset_clip_count": float(self.loader.num_clips),
+                "clip_rotations": float(self._clip_rotations),
             },
             histograms,
         )
@@ -1178,6 +1267,16 @@ class SonicMotionCommand(CommandTerm):
             )
             active_ids = np.flatnonzero(~self._env.reset_buf).astype(np.int32, copy=False)
             self.advance_reference(active_ids)
+            if self._clip_rotation_interval is not None:
+                self._rotation_step_counter += 1
+                if self._rotation_step_counter >= self._clip_rotation_interval:
+                    self._rotation_step_counter = 0
+                    # Rotate after attribution/advancement so every frame
+                    # index stays legal on the loader it was computed
+                    # against; the teleport mirrors the wrap-mode reset and
+                    # leaves the post-rotation observations on the fresh
+                    # subset's start frames.
+                    self.rotate_clip_subset()
         self._command[rows, 0] = self.sampler.current_frames[rows]
 
 

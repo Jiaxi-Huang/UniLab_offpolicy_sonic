@@ -658,6 +658,45 @@ class _RuntimeMotionLoader(_SonicMotionLoader):
         self.smpl_root_quat[:, 0] = 1.0
 
 
+class _SubsetRuntimeLoader(_RuntimeMotionLoader):
+    """Synthetic multi-clip packed loader honoring ``clip_indices`` selection.
+
+    Each selected global clip contributes the base 12-frame synthesis with
+    its joint positions offset by the global clip id, so different subsets
+    (and rotated working sets) are distinguishable through the observations.
+    """
+
+    def __init__(self, store, *, backend, body_names, clip_indices=None):
+        super().__init__(store, backend=backend, body_names=body_names)
+        if clip_indices is None:
+            self.subset_clip_indices = np.zeros(1, dtype=np.int64)
+            return
+        selected = np.asarray(clip_indices, dtype=np.int64)
+        count = len(selected)
+        self.joint_pos = np.concatenate(
+            [self.joint_pos + selected[i].astype(np.float32) * 10.0 for i in range(count)],
+            axis=0,
+        )
+        self.joint_vel = np.concatenate([self.joint_vel] * count, axis=0)
+        for name in (
+            "body_pos_w",
+            "body_quat_w",
+            "body_lin_vel_w",
+            "body_ang_vel_w",
+            "smpl_joints",
+            "smpl_root_quat",
+        ):
+            setattr(self, name, np.concatenate([getattr(self, name)] * count, axis=0))
+        self.clip_lengths = np.full(count, 12, dtype=np.int32)
+        self.clip_offsets = np.zeros(count, dtype=np.int32)
+        if count > 1:
+            self.clip_offsets[1:] = np.cumsum(self.clip_lengths[:-1], dtype=np.int32)
+        self.clip_end_frames = self.clip_offsets + self.clip_lengths - 1
+        self.num_clips = count
+        self.num_frames = int(self.clip_lengths.sum())
+        self.subset_clip_indices = selected
+
+
 @pytest.mark.parametrize("backend_type", ["mujoco", "motrix"])
 def test_sonic_manager_runtime_materializes_and_steps(monkeypatch, backend_type: str) -> None:
     monkeypatch.setattr(sonic_manager, "SonicPackedMotionLoader", _RuntimeMotionLoader)
@@ -837,6 +876,76 @@ def test_sonic_reference_terms_are_row_scoped_on_reset(monkeypatch, backend_type
             out[1], motion.g1_reference(np.asarray([1], dtype=np.intp))[0]
         )
         assert not term._reset_pending.any()
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("backend_type", ["mujoco", "motrix"])
+def test_sonic_clip_subset_rotation_swaps_working_set(monkeypatch, backend_type: str) -> None:
+    """Subset loading bounds the working set and rotation teleports onto it."""
+
+    monkeypatch.setattr(sonic_manager, "SonicPackedMotionLoader", _SubsetRuntimeLoader)
+    monkeypatch.setattr(sonic_manager, "packed_store_clip_count", lambda store: 6)
+    config_dir = Path(__file__).parents[2] / "src" / "unilab" / "conf" / "flashsac"
+    with initialize_config_dir(config_dir=str(config_dir), version_base="1.3"):
+        hydra_cfg = compose(
+            config_name="config_sonic",
+            overrides=[f"task=g1_sonic/{backend_type}"],
+        )
+    env_cfg_override = BackendAdapter(
+        hydra_cfg, root_dir=Path(__file__).parents[2]
+    ).build_task_env_cfg_override()
+    params = env_cfg_override["commands"]["motion"]["params"]
+    params["motion_store_file"] = "synthetic"
+    params["max_loaded_clips"] = 2
+    params["clip_rotation_interval_steps"] = 3
+    params["sampling_mode"] = "start"
+    params["pose_range"] = {axis: [0.0, 0.0] for axis in ("x", "y", "z", "roll", "pitch", "yaw")}
+    params["velocity_range"] = {
+        axis: [0.0, 0.0] for axis in ("x", "y", "z", "roll", "pitch", "yaw")
+    }
+    params["joint_position_range"] = [0.0, 0.0]
+    params["joint_velocity_range"] = [0.0, 0.0]
+    env_cfg_override["observations"]["policy"]["terms"]["obs"]["sonic_noise"] = {"level": 0.0}
+    env = registry.make(
+        "G1SonicManager",
+        sim_backend=backend_type,
+        env_cfg_override=env_cfg_override,
+        num_envs=3,
+    )
+    try:
+        state = env.init_state()
+        motion = env.command_manager.get_term("motion")
+        first_loader = motion.loader
+        assert motion.loader.num_clips == 2
+        assert len(motion.loader.subset_clip_indices) == 2
+        assert motion._ref_smpl_human_local.shape[0] == motion.loader.num_frames
+
+        state = None
+        for _ in range(3):
+            state = env.step(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32))
+
+        assert motion._clip_rotations == 1
+        assert motion.loader is not first_loader
+        assert motion.loader.num_clips == 2
+        # Every in-flight frame index is legal on the rotated loader.
+        clips = motion.loader.get_clip_indices(motion.sampler.current_frames)
+        assert int(clips.min()) >= 0 and int(clips.max()) < motion.loader.num_clips
+        # Staged clip starts from the old working set are dropped and the
+        # derived reference cache is rebuilt against the new one.
+        assert (motion._next_reset_clip_indices == -1).all()
+        assert motion._ref_smpl_human_local.shape[0] == motion.loader.num_frames
+        assert motion._ref_joint_pos_policy.shape[0] == motion.loader.num_frames
+        reference = motion.g1_reference()
+        assert reference.shape == (env.num_envs, 640)
+        assert np.isfinite(reference).all()
+        assert state is not None and np.isfinite(state.obs["obs"]).all()
+
+        # Without an active subset the rotation is a no-op.
+        motion._clip_subset_size = None
+        motion.rotate_clip_subset()
+        assert motion.loader.num_clips == 2
+        assert motion._clip_rotations == 1
     finally:
         env.close()
 

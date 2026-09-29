@@ -78,6 +78,15 @@ def test_sonic_training_compose_enables_full_objective_compile() -> None:
     assert cfg.algo.algo_params.compile_full_objectives is True
 
 
+def test_sonic_motion_subset_params_default_off() -> None:
+    cfg = _compose("task=g1_sonic/mujoco")
+    params = cfg.env.commands.motion.params
+    # The composed task YAML leaves both subset knobs unset; the dataclass
+    # defaults (None) keep the legacy full-store load.
+    assert "max_loaded_clips" not in params
+    assert "clip_rotation_interval_steps" not in params
+
+
 def test_sonic_base_randomization_matches_gear_sonic_semantics() -> None:
     cfg = _compose("task=g1_sonic/base")
     motion = cfg.env.commands.motion.params

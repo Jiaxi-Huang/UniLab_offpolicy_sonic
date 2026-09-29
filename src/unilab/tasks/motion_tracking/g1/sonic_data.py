@@ -586,6 +586,22 @@ class SonicNpzMotionLoader(_SonicMotionLoader):
         self.num_frames = len(self.joint_pos)
 
 
+def packed_store_clip_count(store: str | Path) -> int:
+    """Return the total clip count of a packed SONIC store from its manifest."""
+    root = Path(store).expanduser().resolve()
+    manifest_path = root / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid SONIC packed manifest: {manifest_path}") from error
+    if manifest.get("format") != SONIC_PACKED_FORMAT:
+        raise ValueError(f"Unsupported SONIC packed format {manifest.get('format')!r}")
+    count = int(manifest.get("num_clips", -1))
+    if count <= 0:
+        raise ValueError(f"Invalid SONIC packed clip count in {manifest_path}")
+    return count
+
+
 class SonicPackedMotionLoader(_SonicMotionLoader):
     """Read a versioned SONIC store and materialize it into in-memory arrays.
 
@@ -594,7 +610,15 @@ class SonicPackedMotionLoader(_SonicMotionLoader):
     contract: after init the hot path never touches the ``np.memmap``
     subclass dispatch or the page cache again.  Collectors are spawn
     processes, so each one pays this one-time copy privately.
+
+    ``clip_indices`` selects a subset of clips to materialize: the manifest
+    is still validated against the full store, but only the selected clips'
+    rows are gathered (lazily paging just those regions), so oversized
+    training stores can load a bounded working set.  ``subset_clip_indices``
+    records the selected global clip ids for observability.
     """
+
+    subset_clip_indices: np.ndarray
 
     def __init__(
         self,
@@ -602,6 +626,7 @@ class SonicPackedMotionLoader(_SonicMotionLoader):
         *,
         backend,
         body_names: tuple[str, ...],
+        clip_indices: np.ndarray | None = None,
     ) -> None:
         root = Path(store).expanduser().resolve()
         manifest_path = root / "manifest.json"
@@ -691,10 +716,38 @@ class SonicPackedMotionLoader(_SonicMotionLoader):
             ):
                 raise ValueError(f"SONIC packed array {name!r} violates its shape/dtype contract")
             arrays[name] = array
-        for name, array in arrays.items():
-            # Materialize into a plain ndarray so hot-path gathers skip the
-            # ``np.memmap`` subclass dispatch; the disk format stays mmap-based.
-            setattr(self, name, np.array(array, copy=True))
+        if clip_indices is None:
+            self.subset_clip_indices = np.arange(self.num_clips, dtype=np.int64)
+            for name, array in arrays.items():
+                # Materialize into a plain ndarray so hot-path gathers skip
+                # the ``np.memmap`` subclass dispatch; the disk format stays
+                # mmap-based.
+                setattr(self, name, np.array(array, copy=True))
+        else:
+            selected = np.asarray(clip_indices)
+            if selected.ndim != 1 or len(selected) == 0:
+                raise ValueError("SONIC packed clip_indices must be a non-empty 1-D array")
+            if selected.dtype.kind not in "iu":
+                raise ValueError("SONIC packed clip_indices must be an integer array")
+            if int(selected.min()) < 0 or int(selected.max()) >= self.num_clips:
+                raise ValueError("SONIC packed clip_indices escape the store's clip range")
+            full_offsets = np.zeros(self.num_clips, dtype=np.int64)
+            full_offsets[1:] = np.cumsum(self.clip_lengths[:-1], dtype=np.int64)
+            lengths = self.clip_lengths[selected].astype(np.int64)
+            row_index = np.concatenate(
+                [
+                    np.arange(int(full_offsets[clip]), int(full_offsets[clip] + length))
+                    for clip, length in zip(selected, lengths, strict=True)
+                ]
+            )
+            for name, array in arrays.items():
+                # A single sorted-region fancy-index gather per array touches
+                # only the selected clips' pages of the mapping.
+                setattr(self, name, np.array(array[row_index]))
+            self.subset_clip_indices = selected.astype(np.int64, copy=False)
+            self.clip_lengths = lengths.astype(np.int32)
+            self.num_clips = int(len(lengths))
+            self.num_frames = int(lengths.sum(dtype=np.int64))
 
         self.clip_offsets = np.zeros(self.num_clips, dtype=np.int32)
         if self.num_clips > 1:
