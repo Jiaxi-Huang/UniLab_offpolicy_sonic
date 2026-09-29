@@ -160,7 +160,10 @@ env:
       _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicJointPositionActionCfg
       entity_name: robot
       actuator_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint, right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint, waist_yaw_joint, waist_roll_joint, waist_pitch_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint, left_wrist_roll_joint, left_wrist_pitch_joint, left_wrist_yaw_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint, right_wrist_roll_joint, right_wrist_pitch_joint, right_wrist_yaw_joint]
-      # Training follows the canonical G1 FlashSAC/FastSAC action contract.
+      # Training follows the plain G1 FlashSAC action contract (scalar scale,
+      # same as g1_motion_tracking). Official-release playback overrides the
+      # base scale to 0.25 and sets use_release_scale_rule to expand it with
+      # the per-joint effort/kp ratio.
       scale: 2.0
       # Official SONIC per-joint action scale, in the policy joint order above.
       #scale: [0.3506614664, 0.3506614664, 0.5475464652, 0.3506614664, 0.3506614664, 0.4385773139, 0.5475464652, 0.5475464652, 0.4385773139, 0.3506614664, 0.3506614664, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.4385773139, 0.0745008703, 0.0745008703, 0.0745008703, 0.0745008703]
@@ -187,7 +190,10 @@ env:
           sonic_history_length: ${algo.sonic.model.num_future_frames}
   events:
     reset_reference: {_target_: unilab.managers.EventTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.reset_sonic_reference, mode: reset}
-    actuator_gains: {_target_: unilab.managers.EventTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.SonicActuatorDynamics, mode: reset}
+    # ``actuator_gains`` (SonicActuatorDynamics, released kp/kv/armature reset
+    # override) is intentionally not declared here: the default contract runs
+    # the plain XML <position> actuators. Official-release playback injects
+    # the term via _apply_sonic_play_action_scale.
     base_mass:
       _target_: unilab.managers.EventTermCfg
       func: unilab.envs.mdp.randomize_rigid_body_mass

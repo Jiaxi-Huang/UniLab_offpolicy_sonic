@@ -1340,6 +1340,10 @@ class SonicJointPositionActionCfg(JointPositionActionCfg):
 
     scale: float | list[float] | tuple[float, ...] = G1_SONIC_ACTION_SCALE
     simulate_action_latency: bool = False
+    # Expand a scalar base scale with the released per-joint effort/kp rule.
+    # Off by default so training matches the plain G1 motion-tracking contract;
+    # official-release playback enables it together with the 0.25 base scale.
+    use_release_scale_rule: bool = False
 
     def build(self, env) -> SonicJointPositionAction:
         return SonicJointPositionAction(self, env)
@@ -1364,7 +1368,14 @@ class SonicJointPositionAction(JointPositionAction):
         if cfg.use_default_offset:
             self._offset = self._entity.data.default_joint_pos[:, self._target_ids].copy()
         if isinstance(configured_scale, (int, float)) and not isinstance(configured_scale, bool):
-            self._scale = _sonic_action_scale(float(configured_scale)).reshape(1, self.action_dim)
+            if cfg.use_release_scale_rule:
+                self._scale = _sonic_action_scale(float(configured_scale)).reshape(
+                    1, self.action_dim
+                )
+            else:
+                self._scale = np.full(
+                    (1, self.action_dim), float(configured_scale), dtype=np.float32
+                )
         else:
             scale = np.asarray(configured_scale, dtype=np.float32)
             if scale.shape != (self.action_dim,):
@@ -1853,7 +1864,9 @@ def make_g1_sonic_manager_cfg() -> ManagerBasedRlEnvCfg:
         },
         events={
             "reset_reference": EventTermCfg(func=reset_sonic_reference, mode="reset"),
-            "actuator_gains": EventTermCfg(func=SonicActuatorDynamics, mode="reset"),
+            # ``actuator_gains`` (SonicActuatorDynamics) is intentionally absent:
+            # the default contract uses the plain XML <position> actuators, and
+            # official-release playback injects the term via the play override.
         },
         terminations={
             "anchor_pos_z": TerminationTermCfg(func=sonic_anchor_pos_z_termination),

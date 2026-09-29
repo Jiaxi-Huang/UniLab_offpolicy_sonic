@@ -91,8 +91,8 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         f"profile_frames={model_cfg.num_future_frames}, "
         f"obs_dim={model_cfg.actor_obs_dim + model_cfg.g1_input_dim + model_cfg.smpl_input_dim + 2}, "
         f"backbone_params={model_cfg.parameter_count():,}, "
-        "training_action_scale=2.0 x effort_limit/stiffness; "
-        "release_play_base_scale=0.25 x effort_limit/stiffness"
+        "training_action_scale=2.0 scalar on plain XML actuators; "
+        "sonic_release_play=0.25 x effort_limit/stiffness + released actuator gains"
     )
     env_cfg_override = build_offpolicy_env_cfg_override(algo_name, cfg, root_dir=ROOT_DIR)
     dp_devices = resolve_dp_topology(cfg.training.devices)
@@ -309,11 +309,13 @@ def _align_play_env_to_checkpoint(
 def _apply_sonic_play_action_scale(
     env_cfg_override: dict[str, Any], *, checkpoint_format: str
 ) -> None:
-    """Apply the action scale required by the loaded SONIC checkpoint format.
+    """Apply the action contract required by the loaded SONIC checkpoint format.
 
-    Official SONIC/PPO checkpoints use gear_sonic's base action scale ``0.25``;
-    the environment expands it with the per-joint effort/stiffness ratio.
-    UniLab FlashSAC checkpoints use the task owner's base scale (``2.0``).
+    Official SONIC/PPO checkpoints use gear_sonic's base action scale ``0.25``
+    expanded with the per-joint effort/stiffness ratio, plus the released
+    kp/kv/armature reset override. UniLab FlashSAC checkpoints (and training)
+    use the task owner's scalar base scale (``2.0``) on the plain XML
+    ``<position>`` actuators, matching g1_motion_tracking.
     """
 
     if checkpoint_format != "sonic_release":
@@ -322,6 +324,13 @@ def _apply_sonic_play_action_scale(
     actions = env_cfg_override.setdefault("actions", {})
     joint_pos = actions.setdefault("joint_pos", {})
     joint_pos["scale"] = 0.25
+    joint_pos["use_release_scale_rule"] = True
+    events = env_cfg_override.setdefault("events", {})
+    events["actuator_gains"] = {
+        "_target_": "unilab.managers.EventTermCfg",
+        "func": "unilab.tasks.motion_tracking.g1.sonic_manager.SonicActuatorDynamics",
+        "mode": "reset",
+    }
 
 
 def play_offpolicy(

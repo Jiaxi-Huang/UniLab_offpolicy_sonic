@@ -30,6 +30,7 @@ from unilab.tasks.motion_tracking.g1.sonic_manager import (
     SonicActuatorDynamics,
     SonicCriticObservation,
     SonicJointPositionAction,
+    SonicJointPositionActionCfg,
     SonicMotionCommand,
     SonicMotionCommandCfg,
     SonicNoiseConfig,
@@ -75,6 +76,39 @@ def test_sonic_manager_config_declares_released_policy_contract() -> None:
     )
     assert cfg.rewards == {}
     assert cfg.scale_rewards_by_dt is True
+    # Release-only actuator gains are injected by playback overrides, never
+    # declared by the default task contract.
+    assert set(cfg.events) == {"reset_reference"}
+
+
+def test_sonic_action_scale_is_scalar_by_default_and_release_rule_opt_in() -> None:
+    joints = list(G1_SONIC_JOINTS)
+    ids = np.arange(len(joints), dtype=np.intp)
+    robot = SimpleNamespace(
+        find_joints_by_actuator_names=lambda patterns: (ids, tuple(joints)),
+        find_joints=lambda names, preserve_order=False: (ids, tuple(joints)),
+        data=SimpleNamespace(default_joint_pos=np.zeros((1, len(joints)), dtype=np.float32)),
+    )
+    env = SimpleNamespace(num_envs=1, scene={"robot": robot})
+
+    default_term = SonicJointPositionAction(
+        SonicJointPositionActionCfg(entity_name="robot", actuator_names=joints), env
+    )
+    assert default_term._scale.shape == (1, len(joints))
+    np.testing.assert_allclose(default_term._scale, G1_SONIC_ACTION_SCALE)
+
+    release_term = SonicJointPositionAction(
+        SonicJointPositionActionCfg(
+            entity_name="robot",
+            actuator_names=joints,
+            scale=0.25,
+            use_release_scale_rule=True,
+        ),
+        env,
+    )
+    np.testing.assert_allclose(
+        release_term._scale[0], sonic_manager._sonic_policy_action_scale(), rtol=1e-6
+    )
 
 
 def test_sonic_manager_is_registered_for_both_backends() -> None:

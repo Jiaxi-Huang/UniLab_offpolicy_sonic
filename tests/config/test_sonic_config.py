@@ -244,6 +244,37 @@ def test_sonic_mujoco_play_uses_random_clip_starts_without_episode_timeout() -> 
     assert cfg.env.commands.motion.params.truncate_on_clip_end is True
 
 
+def test_sonic_training_uses_plain_motion_tracking_action_contract() -> None:
+    cfg = _compose("task=g1_sonic/mujoco")
+    assert "actuator_gains" not in cfg.env.events
+    assert float(cfg.env.actions.joint_pos.scale) == pytest.approx(2.0)
+    registry.ensure_registries(packages=["unilab.tasks.motion_tracking"])
+    override = BackendAdapter(cfg, root_dir=ROOT_DIR).build_task_env_cfg_override()
+    env_cfg = registry.materialize_env_config("G1SonicManager")
+    apply_cfg_overrides(env_cfg, override)
+    env_cfg.validate()
+    assert "actuator_gains" not in env_cfg.events
+    action = env_cfg.actions["joint_pos"]
+    assert float(action.scale) == pytest.approx(2.0)
+    assert action.use_release_scale_rule is False
+
+
+def test_sonic_release_play_injects_release_action_contract() -> None:
+    from unilab.training.offpolicy_sonic import _apply_sonic_play_action_scale
+
+    override: dict = {}
+    _apply_sonic_play_action_scale(override, checkpoint_format="unilab")
+    assert override == {}
+
+    _apply_sonic_play_action_scale(override, checkpoint_format="sonic_release")
+    joint_pos = override["actions"]["joint_pos"]
+    assert float(joint_pos["scale"]) == pytest.approx(0.25)
+    assert joint_pos["use_release_scale_rule"] is True
+    event = override["events"]["actuator_gains"]
+    assert event["func"].endswith("SonicActuatorDynamics")
+    assert event["mode"] == "reset"
+
+
 def test_sonic_backends_keep_policy_contract_equal() -> None:
     mujoco = _compose("task=g1_sonic/mujoco")
     motrix = _compose("task=g1_sonic/motrix")
