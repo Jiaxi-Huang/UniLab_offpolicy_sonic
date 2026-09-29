@@ -1,6 +1,6 @@
 # @package _global_
 # Group A: FlashSAC on the iLQR dynamics-resolved LAFAN1 reference (no BC).
-# Produced from data/lafan1 by scripts/motion/mocap2ilqr.py; the source
+# Produced from data/lafan1 by scripts/motion/lafan_ilqr.py; the source
 # dataset stays untouched.
 defaults:
   - /task/g1_sonic/mujoco
@@ -12,6 +12,10 @@ env:
   commands:
     motion:
       params:
-        motion_file: data/lafan1_ilqr/robot_filtered
-        smpl_motion_file: data/lafan1_ilqr/smpl_filtered
-        motion_store_file: data/lafan1_ilqr/packed
+        motion_file: data/sonic/robot_filtered
+        smpl_motion_file: data/sonic/smpl_filtered
+        motion_store_file: data/sonic/packed
+        adaptive_kernel_size: 3
+        adaptive_uniform_ratio: 0.3
+        adaptive_alpha: 0.05
+        adaptive_failure_rate_max_over_mean: 30.0

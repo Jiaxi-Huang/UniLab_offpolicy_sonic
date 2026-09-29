@@ -11,7 +11,6 @@ training:
   play_motion_ghost: true
 env:
   terminations:
-    # Playback should not reset every base-configured 10 seconds.
     time_out: null
     feet_pos: null
     # Play keeps the per-clip truncation protocol: clip_end is the playback
@@ -20,11 +19,10 @@ env:
   commands:
     motion:
       params:
-        motion_file: data/lafan1/robot_filtered
-        smpl_motion_file: data/lafan1/smpl_filtered
-        motion_store_file: data/lafan1/packed
+        motion_file: data/sonic/robot_filtered
+        smpl_motion_file: data/sonic/smpl_filtered
+        motion_store_file: data/sonic/packed
         encoder_sampling: g1
-        # Randomly choose a clip, then start from that clip's first frame.
         sampling_mode: clip_start
         truncate_on_clip_end: true
         anchor_pos_z_threshold: 0.25
@@ -53,6 +51,7 @@ env:
     joint_pos:
       _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicJointPositionActionCfg
       simulate_action_latency: false
+      use_default_offset: true
   events:
     base_mass: null
     base_com: null

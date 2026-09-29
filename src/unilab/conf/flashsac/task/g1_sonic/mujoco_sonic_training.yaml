@@ -24,14 +24,16 @@ env:
   commands:
     motion:
       params:
-        motion_file: data/lafan1/robot_filtered
-        smpl_motion_file: data/lafan1/smpl_filtered
-        motion_store_file: data/lafan1/packed
+        motion_file: data/sonic/robot_filtered
+        smpl_motion_file: data/sonic/smpl_filtered
+        motion_store_file: data/sonic/packed
+        max_loaded_clips: 1024
+        clip_rotation_interval_steps: 2500
         encoder_sampling: mixed
         sampling_mode: adaptive
-        adaptive_kernel_size: 3
-        adaptive_uniform_ratio: 0.3
-        adaptive_alpha: 0.05
-        adaptive_failure_rate_max_over_mean: 30.0
+        adaptive_kernel_size: 1
+        adaptive_uniform_ratio: 0.1
+        #adaptive_alpha: 0.05
+        #adaptive_failure_rate_max_over_mean: 30.0
   events:
     encoder_bias: null

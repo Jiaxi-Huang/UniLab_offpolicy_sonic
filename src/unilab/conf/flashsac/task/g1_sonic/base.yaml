@@ -9,6 +9,7 @@ training:
   # rollout in playback videos (MuJoCo-rendered backends only).
   play_motion_ghost: false
   export_onnx: false
+  inference_request_timeout_sec: 600
 algo:
   # Full release architecture is selected by the root sonic_model default.
   # Use `sonic_model=smoke` for a lightweight contract/training check.
