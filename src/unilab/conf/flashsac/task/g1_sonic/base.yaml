@@ -148,8 +148,13 @@ env:
         joint_position_range: [-0.1, 0.1]
         joint_default_position_range: [0.0, 0.0]
         joint_velocity_range: [0.0, 0.0]
-        reward_point_body_names: [pelvis, left_wrist_yaw_link, right_wrist_yaw_link, left_ankle_roll_link, right_ankle_roll_link]
-        reward_point_body_offsets: [[0.0, 0.0, 0.0], [0.18, -0.025, 0.0], [0.18, 0.025, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+        # Upstream SONIC release 5-point contract: torso (0.5 m above the
+        # link origin) and both wrists; feet stay on the generic body terms.
+        reward_point_body_names: [torso_link, left_wrist_yaw_link, right_wrist_yaw_link]
+        reward_point_body_offsets: [[0.0, 0.0, 0.5], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+        # Legacy gear_sonic motion.yaml default with ankle points:
+        #reward_point_body_names: [pelvis, left_wrist_yaw_link, right_wrist_yaw_link, left_ankle_roll_link, right_ankle_roll_link]
+        #reward_point_body_offsets: [[0.0, 0.0, 0.0], [0.18, -0.025, 0.0], [0.18, 0.025, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
   actions:
     joint_pos:
       _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicJointPositionActionCfg

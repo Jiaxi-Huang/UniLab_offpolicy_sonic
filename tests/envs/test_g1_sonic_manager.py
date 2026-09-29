@@ -510,6 +510,10 @@ def test_sonic_custom_rewards_match_released_numeric_semantics() -> None:
 
     point = motion._reward_point_indices[0]
     motion._robot_body_pos_w[0, point, 0] = 0.1
+    # This fixture drives the dataclass default point set, whose first point
+    # (pelvis) is the anchor body: perturbing the anchor shifts the other
+    # four points' local coordinates by 0.1, so the mean squared error is
+    # 4 * 0.01 / 5 and the reward is exp(-0.8).
     np.testing.assert_allclose(motion.reward_tracking_vr_5point_local(), np.exp(-0.8), rtol=1.0e-6)
 
 
