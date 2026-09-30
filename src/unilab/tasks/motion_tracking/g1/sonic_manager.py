@@ -1344,6 +1344,9 @@ class SonicJointPositionActionCfg(JointPositionActionCfg):
     # Off by default so training matches the plain G1 motion-tracking contract;
     # official-release playback enables it together with the 0.25 base scale.
     use_release_scale_rule: bool = False
+    # Clip processed actions and final targets to soft joint limits. Off by
+    # default (g1_motion_tracking parity); official-release playback enables it.
+    clip_to_joint_limits: bool = False
 
     def build(self, env) -> SonicJointPositionAction:
         return SonicJointPositionAction(self, env)
@@ -1395,6 +1398,8 @@ class SonicJointPositionAction(JointPositionAction):
         executed = self._env.action_manager.prev_action if cfg.simulate_action_latency else actions
         np.multiply(executed, self._scale, out=self._processed_actions)
         np.add(self._processed_actions, self._offset, out=self._processed_actions)
+        if not cfg.clip_to_joint_limits:
+            return
         limits = np.asarray(self._entity.data.soft_joint_pos_limits)
         if limits.ndim == 3:
             limits = limits[:, self._target_ids]
@@ -1415,18 +1420,20 @@ class SonicJointPositionAction(JointPositionAction):
         )
 
     def apply_actions(self) -> None:
+        cfg = cast(SonicJointPositionActionCfg, self.cfg)
         encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
         np.subtract(self._processed_actions, encoder_bias, out=self._target)
-        limits = np.asarray(self._entity.data.soft_joint_pos_limits)
-        if limits.ndim == 3:
-            limits = limits[:, self._target_ids]
-        elif limits.ndim == 2:
-            limits = limits[self._target_ids]
-        else:
-            raise ValueError(
-                "SONIC soft_joint_pos_limits must have shape (joints, 2) or (envs, joints, 2)"
-            )
-        np.clip(self._target, limits[..., 0], limits[..., 1], out=self._target)
+        if cfg.clip_to_joint_limits:
+            limits = np.asarray(self._entity.data.soft_joint_pos_limits)
+            if limits.ndim == 3:
+                limits = limits[:, self._target_ids]
+            elif limits.ndim == 2:
+                limits = limits[self._target_ids]
+            else:
+                raise ValueError(
+                    "SONIC soft_joint_pos_limits must have shape (joints, 2) or (envs, joints, 2)"
+                )
+            np.clip(self._target, limits[..., 0], limits[..., 1], out=self._target)
         self._entity.set_joint_position_target(self._target, joint_ids=self._target_ids)
 
     def resolved_action_contract(self) -> tuple[np.ndarray, np.ndarray]:
@@ -1887,24 +1894,21 @@ G1SonicManagerCfg = ManagerBasedRlEnvCfg
 
 
 class G1SonicManagerEnv(ManagerBasedRlEnv):
-    """Thin scheduler/bounds adapter; task computations remain manager-owned."""
+    """Thin scheduler/bounds adapter; task computations remain manager-owned.
+
+    Action space and action intake are inherited unchanged from
+    ``ManagerBasedRlEnv`` (unbounded Box over the action-term dim), matching
+    the g1_motion_tracking contract; the FlashSAC tanh head already bounds
+    policy actions to [-1, 1].
+    """
 
     _cfg: ManagerBasedRlEnvCfg
 
     def __init__(self, cfg, backend, num_envs):
         super().__init__(cfg, backend, num_envs)
-        self._clipped_actions = np.empty((num_envs, 29), dtype=np.float32)
         self._termination_reason_mask = np.zeros(
             (num_envs, len(SONIC_TERMINATION_REASON_NAMES)), dtype=np.bool_
         )
-
-    @property
-    def action_space(self) -> gym.Space:
-        return gym.spaces.Box(-20.0, 20.0, shape=(29,), dtype=np.float32)
-
-    def apply_action(self, actions: np.ndarray, state: NpEnvState) -> np.ndarray:
-        np.clip(actions, -20.0, 20.0, out=self._clipped_actions)
-        return super().apply_action(self._clipped_actions, state)
 
     def update_state(self, state: NpEnvState) -> NpEnvState:
         motion = _motion_command(self)

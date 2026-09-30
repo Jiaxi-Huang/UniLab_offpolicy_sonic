@@ -325,7 +325,7 @@ def test_sonic_action_term_uses_current_or_previous_clipped_action() -> None:
     )
     term._target_ids = np.arange(29, dtype=np.intp)
     term.joint_velocity_before_action = np.zeros_like(current)
-    term.cfg = SimpleNamespace(simulate_action_latency=False)
+    term.cfg = SimpleNamespace(simulate_action_latency=False, clip_to_joint_limits=False)
     term._env = SimpleNamespace(
         action_manager=SimpleNamespace(prev_action=previous),
     )
@@ -337,8 +337,14 @@ def test_sonic_action_term_uses_current_or_previous_clipped_action() -> None:
     term.process_actions(current)
     np.testing.assert_allclose(term._processed_actions, previous * G1_SONIC_ACTION_SCALE + 1.0)
 
+    # Default contract does not clip to soft joint limits (motion-tracking
+    # parity); the release contract does.
     term.cfg.simulate_action_latency = False
     term._entity.data.soft_joint_pos_limits[term._target_ids[0]] = (-0.1, 0.1)
+    term.process_actions(current)
+    np.testing.assert_allclose(term._processed_actions[:, 0], 2.0 * G1_SONIC_ACTION_SCALE + 1.0)
+
+    term.cfg.clip_to_joint_limits = True
     term.process_actions(current)
     np.testing.assert_allclose(term._processed_actions[:, 0], 0.1)
 
@@ -388,12 +394,11 @@ def test_sonic_reset_stages_policy_order_actuator_gains() -> None:
     np.testing.assert_array_equal(captured["kwargs"]["env_ids"], ids)
 
 
-def test_sonic_env_declares_bounded_action_space() -> None:
-    env = object.__new__(G1SonicManagerEnv)
-    space = env.action_space
-    assert isinstance(space, gym.spaces.Box)
-    np.testing.assert_array_equal(space.low, -20.0)
-    np.testing.assert_array_equal(space.high, 20.0)
+def test_sonic_env_inherits_unbounded_action_space() -> None:
+    # g1_motion_tracking parity: the env declares no action-space override, so
+    # the ManagerBasedRlEnv unbounded Box over the action-term dim applies.
+    assert "action_space" not in G1SonicManagerEnv.__dict__
+    assert "apply_action" not in G1SonicManagerEnv.__dict__
 
 
 class _TransitionBackend:

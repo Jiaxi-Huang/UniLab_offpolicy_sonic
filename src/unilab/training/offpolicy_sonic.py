@@ -312,10 +312,11 @@ def _apply_sonic_play_action_scale(
     """Apply the action contract required by the loaded SONIC checkpoint format.
 
     Official SONIC/PPO checkpoints use gear_sonic's base action scale ``0.25``
-    expanded with the per-joint effort/stiffness ratio, plus the released
-    kp/kv/armature reset override. UniLab FlashSAC checkpoints (and training)
-    use the task owner's scalar base scale (``2.0``) on the plain XML
-    ``<position>`` actuators, matching g1_motion_tracking.
+    expanded with the per-joint effort/stiffness ratio, soft-joint-limit
+    clipping, and the released kp/kv/armature reset override. UniLab FlashSAC
+    checkpoints (and training) use the task owner's scalar base scale
+    (``2.0``) on the plain XML ``<position>`` actuators without joint-limit
+    clipping, matching g1_motion_tracking.
     """
 
     if checkpoint_format != "sonic_release":
@@ -325,6 +326,7 @@ def _apply_sonic_play_action_scale(
     joint_pos = actions.setdefault("joint_pos", {})
     joint_pos["scale"] = 0.25
     joint_pos["use_release_scale_rule"] = True
+    joint_pos["clip_to_joint_limits"] = True
     events = env_cfg_override.setdefault("events", {})
     events["actuator_gains"] = {
         "_target_": "unilab.managers.EventTermCfg",

@@ -270,6 +270,7 @@ def test_sonic_release_play_injects_release_action_contract() -> None:
     joint_pos = override["actions"]["joint_pos"]
     assert float(joint_pos["scale"]) == pytest.approx(0.25)
     assert joint_pos["use_release_scale_rule"] is True
+    assert joint_pos["clip_to_joint_limits"] is True
     event = override["events"]["actuator_gains"]
     assert event["func"].endswith("SonicActuatorDynamics")
     assert event["mode"] == "reset"
