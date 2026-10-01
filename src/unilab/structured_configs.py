@@ -71,6 +71,10 @@ class FlashSACAlgoParams:
     normalized_g_max: float = 5.0
     actor_num_blocks: int = 2
     critic_num_blocks: int = 2
+    # Optional widened first stage of the actor/critic embedders
+    # (input -> widen -> hidden); None keeps the single-projection layout.
+    actor_embedder_dim: Optional[int] = None
+    critic_embedder_dim: Optional[int] = None
     actor_bc_alpha: float = 0.0
     # "replay" BCs against the replayed actions (legacy regularizer);
     # "reference" BCs against the motion-reference joints reachable from the

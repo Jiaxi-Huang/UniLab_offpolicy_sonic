@@ -240,6 +240,11 @@ def build_play_actor(
                 OmegaConf.select(cfg, "algo.algo_params.actor_num_blocks", default=2),
             )
         ),
+        actor_embedder_dim=(
+            int(checkpoint["sonic_actor_embedder_dim"])
+            if checkpoint.get("sonic_actor_embedder_dim")
+            else None
+        ),
         compute_action_decoder=True,
         device=device,
     )

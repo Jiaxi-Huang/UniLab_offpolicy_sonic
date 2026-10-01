@@ -188,6 +188,7 @@ env:
           _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicObservationTermCfg
           func: unilab.tasks.motion_tracking.g1.sonic_manager.SonicCriticObservation
           sonic_history_length: ${algo.sonic.model.num_future_frames}
+        encoder_index: {_target_: unilab.managers.ObservationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_encoder_index}
   events:
     reset_reference: {_target_: unilab.managers.EventTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.reset_sonic_reference, mode: reset}
     # ``actuator_gains`` (SonicActuatorDynamics, released kp/kv/armature reset

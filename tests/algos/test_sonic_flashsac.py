@@ -456,3 +456,73 @@ def test_unilab_flashsac_play_preserves_training_action_scale() -> None:
 
 def test_sonic_checkpoint_format_detection_is_explicit() -> None:
     assert classify_sonic_checkpoint({"policy_state_dict": {}}) == "sonic_release"
+
+
+def test_sonic_flashsac_widened_embedder_round_trips_through_playback() -> None:
+    cfg = _config()
+    input_dim = cfg.actor_obs_dim + cfg.g1_input_dim + cfg.smpl_input_dim + 2
+    learner = SonicFlashSACLearner(
+        model_config=cfg,
+        auxiliary_config=SonicAuxLossConfig(),
+        action_low=torch.full((cfg.action_dim,), -20.0),
+        action_high=torch.full((cfg.action_dim,), 20.0),
+        actor_group_names=SONIC_ACTOR_GROUP_NAMES,
+        actor_group_dims=(cfg.actor_obs_dim, cfg.g1_input_dim, cfg.smpl_input_dim, 2),
+        log_std_min=-5.0,
+        log_std_max=0.0,
+        obs_dim=input_dim,
+        action_dim=cfg.action_dim,
+        critic_obs_dim=5,
+        actor_hidden_dim=8,
+        critic_hidden_dim=8,
+        actor_num_blocks=1,
+        critic_num_blocks=1,
+        actor_embedder_dim=16,
+        critic_embedder_dim=16,
+        num_atoms=5,
+        device="cpu",
+        normalize_reward=False,
+        use_cuda_graph_actor=False,
+    )
+    state = learner.get_state_dict()
+    assert state["format_version"] == 9
+    assert state["sonic_actor_embedder_dim"] == 16
+    assert learner.critic.embedder.widen_width == 16
+    assert classify_sonic_checkpoint(state) == "unilab"
+
+    from unilab.training.offpolicy_sonic import build_play_actor
+
+    play_cfg = OmegaConf.create(
+        {
+            "algo": {
+                "sonic": {
+                    "enabled": True,
+                    "model": state["sonic_model_config"],
+                    "auxiliary": state["sonic_auxiliary_config"],
+                },
+                "algo_params": {"actor_noise_zeta_mu": 2.0, "actor_noise_zeta_max": 4},
+            }
+        }
+    )
+    restored = build_play_actor(
+        play_cfg,
+        state,
+        obs_dim=input_dim,
+        action_low=torch.full((cfg.action_dim,), -20.0),
+        action_high=torch.full((cfg.action_dim,), 20.0),
+        device="cpu",
+    )
+    assert restored.policy_embedder.widen_width == 16
+    restored.load_state_dict(state["actor"])
+    play_obs = _packed(2)
+    torch.testing.assert_close(
+        restored.explore(play_obs, deterministic=True),
+        learner.actor.explore(play_obs, deterministic=True),
+    )
+
+    # A v8 checkpoint (no embedder field) still classifies and restores the
+    # single-projection trunk layout.
+    legacy = dict(state)
+    legacy.pop("sonic_actor_embedder_dim")
+    legacy["format_version"] = 8
+    assert classify_sonic_checkpoint(legacy) == "unilab"

@@ -66,6 +66,7 @@ def test_sonic_manager_config_declares_released_policy_contract() -> None:
         "smpl_reference",
         "encoder_index",
     }
+    assert set(cfg.observations["critic"].terms) == {"obs", "encoder_index"}
     assert tuple(cfg.terminations) == (
         "anchor_pos_z",
         "anchor_ori",
@@ -256,6 +257,9 @@ class _FakeMotion(SonicMotionCommand):
     def g1_command(self, rows: np.ndarray) -> np.ndarray:
         return np.zeros((len(rows), 10, 58), dtype=np.float32)
 
+    def g1_reference(self, rows: np.ndarray) -> np.ndarray:
+        return np.zeros((len(rows), 640), dtype=np.float32)
+
 
 def _reference_motion(num_envs: int = 2, anchor_body_idx: int = 2) -> SonicMotionCommand:
     motion = object.__new__(SonicMotionCommand)
@@ -300,9 +304,10 @@ def test_critic_observation_has_released_width_and_reset_history() -> None:
     term = SonicCriticObservation(ObservationTermCfg(func=SonicCriticObservation), env)
     term.reset(np.arange(env.num_envs))
     actual = term(env)
-    assert actual.shape == (2, 1645)
-    # The first 580 entries are the ten-frame future joint command.
-    np.testing.assert_array_equal(actual[:, :580], 0.0)
+    assert actual.shape == (2, 1705)
+    # The first 640 entries are the ten-frame future G1 reference (future
+    # joint command plus relative-root 6D), matching the actor term layout.
+    np.testing.assert_array_equal(actual[:, :640], 0.0)
 
 
 def test_sonic_action_term_uses_current_or_previous_clipped_action() -> None:
@@ -785,7 +790,9 @@ def test_sonic_manager_runtime_materializes_and_steps(monkeypatch, backend_type:
     try:
         state = env.init_state()
         assert state.obs["obs"].shape == (2, 2412)
-        assert state.obs["critic"].shape == (2, 1645)
+        # critic = g1 reference window (640) + anchor/body error (135)
+        #         + proprio history (930) + encoder index (2)
+        assert state.obs["critic"].shape == (2, 1707)
         motion = env.command_manager.get_term("motion")
         assert motion.sampler.rng is env.rng
         np.testing.assert_allclose(

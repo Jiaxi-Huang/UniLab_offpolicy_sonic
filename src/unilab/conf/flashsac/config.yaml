@@ -28,6 +28,10 @@ algo:
     normalized_g_max: 5.0
     actor_num_blocks: 2
     critic_num_blocks: 2
+    # Optional widened first stage of the actor/critic embedders
+    # (input -> widen -> hidden); null keeps the single-projection layout.
+    actor_embedder_dim: null
+    critic_embedder_dim: null
     actor_bc_alpha: 0.0
     # "replay" = BC against replayed actions; "reference" = BC against the
     # motion-reference joints packed in the next observation (SONIC only).

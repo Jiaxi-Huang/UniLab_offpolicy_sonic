@@ -148,6 +148,8 @@ def build_sonic_flashsac_runner(
         critic_hidden_dim=model_config.critic_hidden_dim,
         actor_num_blocks=cfg.algo.algo_params.actor_num_blocks,
         critic_num_blocks=cfg.algo.algo_params.critic_num_blocks,
+        actor_embedder_dim=getattr(cfg.algo.algo_params, "actor_embedder_dim", None),
+        critic_embedder_dim=getattr(cfg.algo.algo_params, "critic_embedder_dim", None),
         num_atoms=cfg.algo.num_atoms,
         critic_min_v=cfg.algo.algo_params.critic_min_v,
         critic_max_v=cfg.algo.algo_params.critic_max_v,

@@ -1601,9 +1601,11 @@ class SonicCriticObservation(_HistoryObservation):
         history_length = int(getattr(cfg, "sonic_history_length", _DEFAULT_REFERENCE_FRAMES))
         if history_length <= 0:
             raise ValueError("SonicObservationTermCfg sonic_history_length must be positive")
-        # command (58) and proprioception (93) are both history-major; the
+        # The leading block carries the full future G1 reference (64/frame:
+        # future joint command plus relative-root 6D), matching the actor's
+        # g1_reference term; proprioception (93) is history-major; the
         # remaining anchor/body terms contribute a fixed 135 dimensions.
-        super().__init__(cfg, env, 135 + history_length * (58 + _PROPRIO_FRAME_DIM))
+        super().__init__(cfg, env, 135 + history_length * (64 + _PROPRIO_FRAME_DIM))
         self._body_count = len(_motion_command(env).cfg.body_names)
 
     def __call__(self, env) -> np.ndarray:
@@ -1622,7 +1624,7 @@ class SonicCriticObservation(_HistoryObservation):
         )
         joint_vel = robot.joint_vel[rows][:, self._policy_joint_ids]
         action = env.action_manager.action[rows]
-        command = motion.g1_command(rows)
+        command = motion.g1_reference(rows)
         reference = motion.motion_data
         anchor_idx = motion.anchor_body_idx
         anchor_pos = np.empty((len(rows), 3), dtype=np.float32)
@@ -1866,7 +1868,10 @@ def make_g1_sonic_manager_cfg() -> ManagerBasedRlEnvCfg:
         observations={
             "policy": ObservationGroupCfg(terms=policy),
             "critic": ObservationGroupCfg(
-                terms={"obs": ObservationTermCfg(func=SonicCriticObservation)}
+                terms={
+                    "obs": ObservationTermCfg(func=SonicCriticObservation),
+                    "encoder_index": ObservationTermCfg(func=sonic_encoder_index),
+                }
             ),
         },
         events={
