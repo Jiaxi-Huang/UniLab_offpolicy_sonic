@@ -1521,6 +1521,10 @@ class _HistoryObservation:
 class SonicObservationTermCfg(ObservationTermCfg):
     sonic_noise: SonicNoiseConfig = field(default_factory=SonicNoiseConfig)
     sonic_history_length: int = _DEFAULT_REFERENCE_FRAMES
+    # SonicCriticObservation only: False restores the pre-privileged layout
+    # (58/frame future joint command, no future root 6D), matching the
+    # upstream privileged_mf_hist critic exactly.
+    critic_privileged: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -1529,6 +1533,8 @@ class SonicObservationTermCfg(ObservationTermCfg):
             or self.sonic_history_length <= 0
         ):
             raise ValueError("SonicObservationTermCfg sonic_history_length must be positive")
+        if isinstance(self.critic_privileged, bool) is False:
+            raise ValueError("SonicObservationTermCfg critic_privileged must be a bool")
 
 
 class SonicActorObservation(_HistoryObservation):
@@ -1601,11 +1607,14 @@ class SonicCriticObservation(_HistoryObservation):
         history_length = int(getattr(cfg, "sonic_history_length", _DEFAULT_REFERENCE_FRAMES))
         if history_length <= 0:
             raise ValueError("SonicObservationTermCfg sonic_history_length must be positive")
-        # The leading block carries the full future G1 reference (64/frame:
-        # future joint command plus relative-root 6D), matching the actor's
-        # g1_reference term; proprioception (93) is history-major; the
-        # remaining anchor/body terms contribute a fixed 135 dimensions.
-        super().__init__(cfg, env, 135 + history_length * (64 + _PROPRIO_FRAME_DIM))
+        self._privileged = bool(getattr(cfg, "critic_privileged", True))
+        # Privileged layout: the leading block carries the full future G1
+        # reference (64/frame: future joint command plus relative-root 6D),
+        # matching the actor's g1_reference term. Legacy layout keeps the
+        # upstream-identical 58/frame future joint command. Proprioception
+        # (93) is history-major; anchor/body terms add a fixed 135 dims.
+        frame_dim = 64 if self._privileged else 58
+        super().__init__(cfg, env, 135 + history_length * (frame_dim + _PROPRIO_FRAME_DIM))
         self._body_count = len(_motion_command(env).cfg.body_names)
 
     def __call__(self, env) -> np.ndarray:
@@ -1624,7 +1633,7 @@ class SonicCriticObservation(_HistoryObservation):
         )
         joint_vel = robot.joint_vel[rows][:, self._policy_joint_ids]
         action = env.action_manager.action[rows]
-        command = motion.g1_reference(rows)
+        command = motion.g1_reference(rows) if self._privileged else motion.g1_command(rows)
         reference = motion.motion_data
         anchor_idx = motion.anchor_body_idx
         anchor_pos = np.empty((len(rows), 3), dtype=np.float32)
