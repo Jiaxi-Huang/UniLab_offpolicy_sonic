@@ -1247,15 +1247,30 @@ def test_sonic_manager_wrap_mode_continues_episode_past_clip_end(
         env.close()
 
 
-def test_critic_observation_legacy_layout_restores_upstream_width() -> None:
+@pytest.mark.parametrize(
+    ("ori", "pos", "width", "leading"),
+    [
+        (False, False, 1645, 580),  # base: upstream-identical joint command
+        (True, False, 1705, 640),  # + future root 6D (g1_reference)
+        (False, True, 1675, 610),  # + future root positions
+        (True, True, 1735, 670),  # + both
+    ],
+)
+def test_critic_observation_privileged_ablation_widths(
+    ori: bool, pos: bool, width: int, leading: int
+) -> None:
     env = _observation_env()
     motion = _FakeMotion(env.num_envs)
     env.command_manager = SimpleNamespace(get_term=lambda name: motion)
     term = SonicCriticObservation(
-        SonicObservationTermCfg(func=SonicCriticObservation, critic_privileged=False), env
+        SonicObservationTermCfg(
+            func=SonicCriticObservation,
+            critic_future_root_ori=ori,
+            critic_future_root_pos=pos,
+        ),
+        env,
     )
     term.reset(np.arange(env.num_envs))
     actual = term(env)
-    assert actual.shape == (2, 1645)
-    # Legacy leading block is the 58/frame future joint command only.
-    np.testing.assert_array_equal(actual[:, :580], 0.0)
+    assert actual.shape == (2, width)
+    np.testing.assert_array_equal(actual[:, :leading], 0.0)

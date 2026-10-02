@@ -1543,10 +1543,12 @@ class _HistoryObservation:
 class SonicObservationTermCfg(ObservationTermCfg):
     sonic_noise: SonicNoiseConfig = field(default_factory=SonicNoiseConfig)
     sonic_history_length: int = _DEFAULT_REFERENCE_FRAMES
-    # SonicCriticObservation only: False restores the pre-privileged layout
-    # (58/frame future joint command, no future root 6D), matching the
-    # upstream privileged_mf_hist critic exactly.
-    critic_privileged: bool = True
+    # SonicCriticObservation ablation switches for the privileged increments
+    # over the base layout (58/frame future joint command). Each adds one
+    # block per future frame: ori = relative-root 6D (g1_reference), pos =
+    # future reference root position offsets in the current root frame.
+    critic_future_root_ori: bool = True
+    critic_future_root_pos: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -1555,8 +1557,9 @@ class SonicObservationTermCfg(ObservationTermCfg):
             or self.sonic_history_length <= 0
         ):
             raise ValueError("SonicObservationTermCfg sonic_history_length must be positive")
-        if isinstance(self.critic_privileged, bool) is False:
-            raise ValueError("SonicObservationTermCfg critic_privileged must be a bool")
+        for name in ("critic_future_root_ori", "critic_future_root_pos"):
+            if isinstance(getattr(self, name), bool) is False:
+                raise ValueError(f"SonicObservationTermCfg {name} must be a bool")
 
 
 class SonicActorObservation(_HistoryObservation):
@@ -1629,14 +1632,13 @@ class SonicCriticObservation(_HistoryObservation):
         history_length = int(getattr(cfg, "sonic_history_length", _DEFAULT_REFERENCE_FRAMES))
         if history_length <= 0:
             raise ValueError("SonicObservationTermCfg sonic_history_length must be positive")
-        self._privileged = bool(getattr(cfg, "critic_privileged", True))
-        # Privileged layout: the leading block carries the full future G1
-        # reference (64/frame: future joint command plus relative-root 6D)
-        # plus the future root position offsets (3/frame, translation half
-        # of the future root trajectory). Legacy layout keeps the
-        # upstream-identical 58/frame future joint command. Proprioception
-        # (93) is history-major; anchor/body terms add a fixed 135 dims.
-        frame_dim = 67 if self._privileged else 58
+        self._future_root_ori = bool(getattr(cfg, "critic_future_root_ori", True))
+        self._future_root_pos = bool(getattr(cfg, "critic_future_root_pos", True))
+        # Leading block per future frame: the base 58-dim future joint
+        # command, plus the relative-root 6D (ori switch) and/or the future
+        # root position offsets (pos switch). Proprioception (93) is
+        # history-major; anchor/body terms add a fixed 135 dims.
+        frame_dim = 58 + (6 if self._future_root_ori else 0) + (3 if self._future_root_pos else 0)
         super().__init__(cfg, env, 135 + history_length * (frame_dim + _PROPRIO_FRAME_DIM))
         self._body_count = len(_motion_command(env).cfg.body_names)
 
@@ -1656,8 +1658,8 @@ class SonicCriticObservation(_HistoryObservation):
         )
         joint_vel = robot.joint_vel[rows][:, self._policy_joint_ids]
         action = env.action_manager.action[rows]
-        command = motion.g1_reference(rows) if self._privileged else motion.g1_command(rows)
-        future_root_pos = motion.g1_future_root_pos_b(rows) if self._privileged else None
+        command = motion.g1_reference(rows) if self._future_root_ori else motion.g1_command(rows)
+        future_root_pos = motion.g1_future_root_pos_b(rows) if self._future_root_pos else None
         reference = motion.motion_data
         anchor_idx = motion.anchor_body_idx
         anchor_pos = np.empty((len(rows), 3), dtype=np.float32)
