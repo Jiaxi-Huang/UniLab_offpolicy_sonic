@@ -8,7 +8,7 @@ training:
 env:
   terminations:
     # Playback should not reset every base-configured 10 seconds.
-    time_out: null
+    #time_out: null
     feet_pos: null
     # Play keeps the per-clip truncation protocol: clip_end is the playback
     # loop boundary, so the wrap-mode training default is pinned back here.

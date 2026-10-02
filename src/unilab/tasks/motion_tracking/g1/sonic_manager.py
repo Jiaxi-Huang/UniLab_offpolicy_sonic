@@ -1054,6 +1054,28 @@ class SonicMotionCommand(CommandTerm):
             get_global_dtype(), copy=False
         )
 
+    def g1_future_root_pos_b(self, rows: np.ndarray) -> np.ndarray:
+        """Future reference root positions relative to the robot root, root-frame.
+
+        Complements the 6D future root orientation in ``g1_reference`` with
+        the translational half: where the reference root will be over the
+        future window, expressed in the robot's current root frame. Shape
+        ``(len(rows), num_future_frames * 3)``.
+        """
+        future = self.loader.future_indices(
+            self.sampler.current_frames[rows], _G1_FUTURE_STRIDE, self.cfg.num_future_frames
+        )
+        robot = self._env.scene["robot"].data
+        root_quat = robot.root_link_quat_w[rows]
+        delta = (
+            self.loader.body_pos_w[future, self.anchor_body_idx] - robot.root_link_pos_w[rows, None]
+        )
+        flat = delta.reshape(-1, 3)
+        rotated = np_quat_apply_inverse_batched(
+            np.repeat(root_quat, self.cfg.num_future_frames, axis=0), flat
+        )
+        return rotated.reshape(len(rows), -1).astype(get_global_dtype(), copy=False)
+
     def smpl_reference(self, rows: np.ndarray | None = None) -> np.ndarray:
         rows = np.arange(self.num_envs, dtype=np.intp) if rows is None else rows
         future = self.loader.future_indices(
@@ -1609,11 +1631,12 @@ class SonicCriticObservation(_HistoryObservation):
             raise ValueError("SonicObservationTermCfg sonic_history_length must be positive")
         self._privileged = bool(getattr(cfg, "critic_privileged", True))
         # Privileged layout: the leading block carries the full future G1
-        # reference (64/frame: future joint command plus relative-root 6D),
-        # matching the actor's g1_reference term. Legacy layout keeps the
+        # reference (64/frame: future joint command plus relative-root 6D)
+        # plus the future root position offsets (3/frame, translation half
+        # of the future root trajectory). Legacy layout keeps the
         # upstream-identical 58/frame future joint command. Proprioception
         # (93) is history-major; anchor/body terms add a fixed 135 dims.
-        frame_dim = 64 if self._privileged else 58
+        frame_dim = 67 if self._privileged else 58
         super().__init__(cfg, env, 135 + history_length * (frame_dim + _PROPRIO_FRAME_DIM))
         self._body_count = len(_motion_command(env).cfg.body_names)
 
@@ -1634,6 +1657,7 @@ class SonicCriticObservation(_HistoryObservation):
         joint_vel = robot.joint_vel[rows][:, self._policy_joint_ids]
         action = env.action_manager.action[rows]
         command = motion.g1_reference(rows) if self._privileged else motion.g1_command(rows)
+        future_root_pos = motion.g1_future_root_pos_b(rows) if self._privileged else None
         reference = motion.motion_data
         anchor_idx = motion.anchor_body_idx
         anchor_pos = np.empty((len(rows), 3), dtype=np.float32)
@@ -1673,9 +1697,12 @@ class SonicCriticObservation(_HistoryObservation):
         # The command/anchor/body block leads; the fused kernel fills the
         # trailing history block in one pass.
         history_offset = self._output.shape[1] - self._history.shape[1] * _PROPRIO_FRAME_DIM
+        leading_blocks = [command.reshape(len(rows), -1)]
+        if future_root_pos is not None:
+            leading_blocks.append(future_root_pos.reshape(len(rows), -1))
         self._output[rows, :history_offset] = np.concatenate(
             (
-                command.reshape(len(rows), -1),
+                *leading_blocks,
                 anchor_pos,
                 anchor_ori,
                 body_pos_b.reshape(len(rows), -1),
