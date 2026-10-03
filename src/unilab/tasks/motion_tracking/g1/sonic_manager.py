@@ -96,6 +96,7 @@ from .sonic_data import (
     _SonicMotionLoader,
     np_quat_from_euler_xyz,
     packed_store_clip_count,
+    packed_store_clip_lengths,
 )
 from .sonic_kernels import (
     configure_motion_kernel_runtime,
@@ -517,6 +518,7 @@ class SonicMotionCommand(CommandTerm):
                     else "npz"
                 )
         self._clip_subset_size: int | None = None
+        self._all_clip_lengths: np.ndarray | None = None
         self._clip_rotation_interval: int | None = None
         self._rotation_step_counter = 0
         self._clip_rotations = 0
@@ -538,6 +540,9 @@ class SonicMotionCommand(CommandTerm):
                 )
             else:
                 self._clip_subset_size = int(max_loaded)
+                # Dataset-wide clip lengths back the stable adaptive-sampling
+                # statistics that survive clip-subset rotations.
+                self._all_clip_lengths = packed_store_clip_lengths(task_cfg.motion_store_file)
                 loader = SonicPackedMotionLoader(
                     task_cfg.motion_store_file,
                     backend=backend,
@@ -576,7 +581,14 @@ class SonicMotionCommand(CommandTerm):
                 body_names=task_cfg.body_names,
             )
         self.loader: _SonicMotionLoader = loader
-        self.sampler = self._build_sampler(loader)
+        if self._all_clip_lengths is not None:
+            self.sampler = self._build_sampler(
+                loader,
+                all_clip_lengths=self._all_clip_lengths,
+                active_clip_ids=getattr(loader, "subset_clip_indices", None),
+            )
+        else:
+            self.sampler = self._build_sampler(loader)
         self.anchor_body_idx = task_cfg.body_names.index(task_cfg.anchor_body_name)
         self.ee_body_indices = np.asarray(
             [task_cfg.body_names.index(name) for name in task_cfg.ee_body_names], dtype=np.intp
@@ -1110,15 +1122,28 @@ class SonicMotionCommand(CommandTerm):
             axis=-1,
         ).astype(np.float32, copy=False)
 
-    def _build_sampler(self, loader: _SonicMotionLoader) -> MotionSampler:
+    def _build_sampler(
+        self,
+        loader: _SonicMotionLoader,
+        *,
+        all_clip_lengths: np.ndarray | None = None,
+        active_clip_ids: np.ndarray | None = None,
+        inherited_statistics: tuple[np.ndarray, np.ndarray] | None = None,
+    ) -> MotionSampler:
         task_cfg = self.cfg
+        # Rotation mode defines the temporal bin width on the full dataset
+        # (bin_count=None auto-derives from it); single-load mode keeps the
+        # loader-local count. Runtime test loaders and legacy packed stores
+        # may omit fps; SONIC references are standardized at 50 Hz.
+        if all_clip_lengths is None:
+            bin_count = int(loader.num_frames // getattr(loader, "fps", 50)) + 1
+        else:
+            bin_count = None
         return MotionSampler(
             loader,
             task_cfg.sampling_mode,
             self.num_envs,
-            # Runtime test loaders and legacy packed stores may omit fps;
-            # SONIC references are standardized at 50 Hz.
-            bin_count=int(loader.num_frames // getattr(loader, "fps", 50)) + 1,
+            bin_count=bin_count,
             adaptive_lambda=task_cfg.adaptive_lambda,
             adaptive_kernel_size=task_cfg.adaptive_kernel_size,
             adaptive_uniform_ratio=task_cfg.adaptive_uniform_ratio,
@@ -1132,6 +1157,9 @@ class SonicMotionCommand(CommandTerm):
             adaptive_max_prob_per_motion=task_cfg.adaptive_max_prob_per_motion,
             start_ratio=task_cfg.sampling_start_ratio,
             rng=self._env.rng,
+            all_clip_lengths=all_clip_lengths,
+            active_clip_ids=active_clip_ids,
+            inherited_statistics=inherited_statistics,
         )
 
     def rotate_clip_subset(self) -> None:
@@ -1140,13 +1168,16 @@ class SonicMotionCommand(CommandTerm):
         Rebuilds the loader, sampler, and derived reference features for the
         new subset, then teleports every environment onto it through
         ``reset_reference`` — the same mid-episode teleport the wrap mode
-        applies on clip exhaustion.  Adaptive-sampling statistics restart
-        from their prior on each rotation.  No-op without an active subset.
+        applies on clip exhaustion.  Adaptive-sampling statistics live on
+        dataset-wide bins and are inherited by the successor sampler, so
+        rotations keep the learned difficulty curriculum (upstream
+        motion-lib reload semantics).  No-op without an active subset.
         """
         if self._clip_subset_size is None or self._packed_backend is None:
             return
         task_cfg = self.cfg
         total_clips = packed_store_clip_count(task_cfg.motion_store_file)
+        inherited = self.sampler.export_global_statistics()
         loader = SonicPackedMotionLoader(
             task_cfg.motion_store_file,
             backend=self._packed_backend,
@@ -1156,7 +1187,12 @@ class SonicMotionCommand(CommandTerm):
             ),
         )
         self.loader = loader
-        self.sampler = self._build_sampler(loader)
+        self.sampler = self._build_sampler(
+            loader,
+            all_clip_lengths=self._all_clip_lengths,
+            active_clip_ids=loader.subset_clip_indices,
+            inherited_statistics=inherited,
+        )
         self._next_reset_clip_indices.fill(-1)
         self._g1_command_cache = None
         self._g1_command_cache_step = -1

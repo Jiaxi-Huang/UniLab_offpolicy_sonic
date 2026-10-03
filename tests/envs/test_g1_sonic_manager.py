@@ -941,6 +941,9 @@ def test_sonic_clip_subset_rotation_swaps_working_set(monkeypatch, backend_type:
 
     monkeypatch.setattr(sonic_manager, "SonicPackedMotionLoader", _SubsetRuntimeLoader)
     monkeypatch.setattr(sonic_manager, "packed_store_clip_count", lambda store: 6)
+    monkeypatch.setattr(
+        sonic_manager, "packed_store_clip_lengths", lambda store: np.full(6, 12, dtype=np.int32)
+    )
     config_dir = Path(__file__).parents[2] / "src" / "unilab" / "conf" / "flashsac"
     with initialize_config_dir(config_dir=str(config_dir), version_base="1.3"):
         hydra_cfg = compose(
@@ -995,6 +998,13 @@ def test_sonic_clip_subset_rotation_swaps_working_set(monkeypatch, backend_type:
         assert reference.shape == (env.num_envs, 640)
         assert np.isfinite(reference).all()
         assert state is not None and np.isfinite(state.obs["obs"]).all()
+
+        # The successor sampler carries the dataset-wide statistics layer:
+        # every 12-frame clip maps to one global bin, so the global table has
+        # six stable bins regardless of the active subset.
+        exported = motion.sampler.export_global_statistics()
+        assert exported is not None
+        assert exported[0].size == 6
 
         # Without an active subset the rotation is a no-op.
         motion._clip_subset_size = None

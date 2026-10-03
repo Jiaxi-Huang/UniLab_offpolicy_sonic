@@ -416,7 +416,15 @@ class MotionLoader:
 
 
 class MotionSampler:
-    """Handles motion frame sampling with different strategies."""
+    """Handles motion frame sampling with different strategies.
+
+    Rotation-mode global statistics: when ``all_clip_lengths`` is provided
+    (working-set training over a packed store), adaptive failure statistics
+    are additionally accumulated on stable dataset-wide bins so a clip-
+    subset rotation can carry them over, mirroring the upstream motion-lib
+    contract ("bin indices are stable across reloads"). Sampling still
+    happens on the active loader's local bins; only the statistics travel.
+    """
 
     def __init__(
         self,
@@ -437,6 +445,9 @@ class MotionSampler:
         adaptive_max_prob_per_motion: float | None = None,
         start_ratio: float = 0.0,
         rng: np.random.Generator | None = None,
+        all_clip_lengths: np.ndarray | None = None,
+        active_clip_ids: np.ndarray | None = None,
+        inherited_statistics: tuple[np.ndarray, np.ndarray] | None = None,
     ):
         """Initialize motion sampler.
 
@@ -467,8 +478,7 @@ class MotionSampler:
             raise ValueError("start_ratio is only effective when mode='mixed'")
         if not np.isfinite(adaptive_lambda) or not 0.0 < adaptive_lambda <= 1.0:
             raise ValueError(
-                "adaptive_lambda must be finite and within (0, 1], "
-                f"got {adaptive_lambda}"
+                f"adaptive_lambda must be finite and within (0, 1], got {adaptive_lambda}"
             )
         if adaptive_kernel_size < 1:
             raise ValueError(
@@ -476,8 +486,7 @@ class MotionSampler:
             )
         if not 0.0 <= adaptive_uniform_ratio <= 1.0:
             raise ValueError(
-                "adaptive_uniform_ratio must be in [0, 1], "
-                f"got {adaptive_uniform_ratio}"
+                f"adaptive_uniform_ratio must be in [0, 1], got {adaptive_uniform_ratio}"
             )
         if not 0.0 < adaptive_alpha <= 1.0:
             raise ValueError(f"adaptive_alpha must be in (0, 1], got {adaptive_alpha}")
@@ -494,7 +503,10 @@ class MotionSampler:
             )
         if isinstance(adaptive_pre_failure_window, bool) or adaptive_pre_failure_window < 0:
             raise ValueError("adaptive_pre_failure_window must be a non-negative integer")
-        if not np.isfinite(adaptive_failure_rate_max_over_mean) or adaptive_failure_rate_max_over_mean <= 0.0:
+        if (
+            not np.isfinite(adaptive_failure_rate_max_over_mean)
+            or adaptive_failure_rate_max_over_mean <= 0.0
+        ):
             raise ValueError("adaptive_failure_rate_max_over_mean must be positive and finite")
         if (
             isinstance(adaptive_sampling_update_interval, bool)
@@ -526,10 +538,32 @@ class MotionSampler:
             num_envs, motion_loader.clip_end_frames[0], dtype=np.int32
         )
 
-        # Adaptive sampling parameters
+        # Adaptive sampling parameters. In rotation mode the bin width is
+        # defined on the full dataset so local (active-subset) and global
+        # bins slice every clip identically.
+        if all_clip_lengths is not None:
+            lengths = np.asarray(all_clip_lengths, dtype=np.int64)
+            if lengths.ndim != 1 or np.any(lengths <= 0):
+                raise ValueError("all_clip_lengths must be a 1-D array of positive lengths")
+            if active_clip_ids is None:
+                raise ValueError("rotation mode requires active_clip_ids")
+            ids = np.asarray(active_clip_ids, dtype=np.int64)
+            if ids.ndim != 1 or len(ids) != motion_loader.num_clips:
+                raise ValueError("active_clip_ids must match the loader clip count")
+            if np.any(ids < 0) or np.any(ids >= len(lengths)):
+                raise ValueError("active_clip_ids are outside all_clip_lengths")
+            if not np.array_equal(
+                np.sort(lengths[ids]), np.sort(motion_loader.clip_lengths.astype(np.int64))
+            ):
+                raise ValueError("active clip lengths disagree with the loader")
+            reference_frames = int(lengths.sum())
+        else:
+            reference_frames = int(motion_loader.num_frames)
         if bin_count is None:
             # Keep approximately one-second bins, as in the Sonic sampler.
-            configured_bin_count = int(motion_loader.num_frames // motion_loader.fps) + 1
+            # Runtime test loaders may omit fps; SONIC references are 50 Hz.
+            reference_fps = int(getattr(motion_loader, "fps", 50))
+            configured_bin_count = int(reference_frames // reference_fps) + 1
         else:
             configured_bin_count = int(bin_count)
         if configured_bin_count < 1:
@@ -538,7 +572,7 @@ class MotionSampler:
         # Adaptive bins are clip-local.  ``bin_count`` is retained as the
         # single-clip equivalent for backwards compatibility; for multiple
         # clips it defines the target temporal bin width.
-        target_bin_width = max(1, int(math.ceil(motion_loader.num_frames / configured_bin_count)))
+        target_bin_width = max(1, int(math.ceil(reference_frames / configured_bin_count)))
         clip_bin_counts = np.maximum(
             1, np.ceil(motion_loader.clip_lengths / target_bin_width).astype(np.int32)
         )
@@ -609,6 +643,49 @@ class MotionSampler:
         self._adaptive_steps_since_update = 0
         self._adaptive_probs_initialized = False
 
+        # Dataset-wide statistics layer (rotation mode only). Local and
+        # global bins slice every clip with the same width, so a local bin
+        # maps to its global counterpart by (clip id, bin index in clip).
+        self._all_clip_lengths = None if all_clip_lengths is None else lengths
+        self._active_clip_ids = None if all_clip_lengths is None else ids
+        self._local_bin_to_global_bin = None
+        self._global_failed_count = None
+        self._global_visit_count = None
+        if all_clip_lengths is not None:
+            global_clip_bin_counts = np.maximum(
+                1, np.ceil(lengths / target_bin_width).astype(np.int64)
+            )
+            global_bin_offsets = np.concatenate(([0], np.cumsum(global_clip_bin_counts[:-1])))
+            total_global_bins = int(global_bin_offsets[-1] + global_clip_bin_counts[-1])
+            local_in_clip = np.arange(adaptive_bin_count, dtype=np.int64) - np.repeat(
+                np.concatenate(([0], np.cumsum(self._clip_bin_counts[:-1]))).astype(np.int64),
+                self._clip_bin_counts,
+            )
+            self._local_bin_to_global_bin = (
+                global_bin_offsets[ids][self._bin_clip_indices] + local_in_clip
+            ).astype(np.int64)
+            self._global_failed_count = np.zeros(total_global_bins, dtype=np.float32)
+            self._global_visit_count = np.zeros(total_global_bins, dtype=np.float32)
+            if inherited_statistics is not None:
+                failed, visited = inherited_statistics
+                failed = np.asarray(failed, dtype=np.float32)
+                visited = np.asarray(visited, dtype=np.float32)
+                if failed.shape != (total_global_bins,) or visited.shape != (total_global_bins,):
+                    raise ValueError("inherited_statistics must match the dataset-wide bin count")
+                self._global_failed_count[...] = failed
+                self._global_visit_count[...] = visited
+                mapped_failed = failed[self._local_bin_to_global_bin]
+                mapped_visited = visited[self._local_bin_to_global_bin]
+                self.bin_failed_count[...] = mapped_failed
+                self.bin_visit_count[...] = mapped_visited
+                if adaptive_failure_stat == "cumulative":
+                    prior = np.float32(self.adaptive_failure_prior)
+                    np.divide(
+                        self.bin_failed_count + prior,
+                        self.bin_visit_count + prior,
+                        out=self.bin_failure_rate,
+                    )
+
         # Precompute adaptive kernel
         self.kernel = np.array(
             [adaptive_lambda**i for i in range(adaptive_kernel_size)], dtype=np.float32
@@ -630,6 +707,21 @@ class MotionSampler:
             float(adaptive_uniform_ratio) if mode == "adaptive" else 0.0
         )
         self._done_mask = np.zeros(num_envs, dtype=bool)
+
+    def export_global_statistics(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return dataset-wide (failed, visited) counters, or None.
+
+        Only rotation-mode samplers carry the global layer. The returned
+        arrays are copies sized to the dataset-wide bin table and can be
+        passed as ``inherited_statistics`` to a successor sampler built on a
+        different active subset.
+        """
+        if self._global_failed_count is None:
+            return None
+        return (
+            self._global_failed_count.copy(),
+            self._global_visit_count.copy(),
+        )
 
     def sample_frames(self, env_ids: np.ndarray) -> np.ndarray:
         """Sample motion frames for specified environments.
@@ -784,8 +876,7 @@ class MotionSampler:
             else self.rng.uniform(0.0, 1.0, len(env_ids))
         )
         frames = (
-            self._bin_start_frames[sampled_bins]
-            + bin_offsets * self._bin_lengths[sampled_bins]
+            self._bin_start_frames[sampled_bins] + bin_offsets * self._bin_lengths[sampled_bins]
         ).astype(np.int32)
         if self.adaptive_pre_failure_window > 0:
             clip_indices = self.motion_loader.get_clip_indices(frames)
@@ -840,9 +931,8 @@ class MotionSampler:
             adaptive_probs /= adaptive_probs.sum()
 
         sampling_probs = (
-            (1.0 - self.adaptive_uniform_ratio) * adaptive_probs
-            + self.adaptive_uniform_ratio * self._uniform_probs
-        )
+            1.0 - self.adaptive_uniform_ratio
+        ) * adaptive_probs + self.adaptive_uniform_ratio * self._uniform_probs
         sampling_probs /= sampling_probs.sum()
         clip_mass = np.bincount(
             self._bin_clip_indices,
@@ -996,6 +1086,23 @@ class MotionSampler:
 
         self.bin_visit_count += self._current_bin_visited
         self.bin_failed_count += self._current_bin_failed
+        if self._local_bin_to_global_bin is not None:
+            # Mirror this cycle's increments onto the dataset-wide counters
+            # so clip-subset rotations can inherit the full history.
+            touched = self._current_bin_visited > 0.0
+            if np.any(touched):
+                local_ids = np.flatnonzero(touched)
+                global_ids = self._local_bin_to_global_bin[local_ids]
+                np.add.at(
+                    self._global_failed_count,
+                    global_ids,
+                    self._current_bin_failed[local_ids],
+                )
+                np.add.at(
+                    self._global_visit_count,
+                    global_ids,
+                    self._current_bin_visited[local_ids],
+                )
         if self.adaptive_failure_stat == "cumulative":
             # Pure function of the cumulative counters; the prior keeps the
             # rate well-defined for bins nobody visited yet.
@@ -1017,13 +1124,11 @@ class MotionSampler:
             # Update only bins observed in this collector cycle; otherwise an
             # unvisited bin would decay toward zero merely because it was absent.
             self._bin_failure_rate_ema[visited] = (
-                (1.0 - self.adaptive_alpha) * self._bin_failure_rate_ema[visited]
-                + self.adaptive_alpha * current_rate[visited]
-            )
-            self._bin_visit_ema[visited] = (
-                (1.0 - self.adaptive_alpha) * self._bin_visit_ema[visited]
-                + self.adaptive_alpha * self._current_bin_visited[visited]
-            )
+                1.0 - self.adaptive_alpha
+            ) * self._bin_failure_rate_ema[visited] + self.adaptive_alpha * current_rate[visited]
+            self._bin_visit_ema[visited] = (1.0 - self.adaptive_alpha) * self._bin_visit_ema[
+                visited
+            ] + self.adaptive_alpha * self._current_bin_visited[visited]
             self.bin_failure_rate[...] = self._bin_failure_rate_ema
         self.sampling_failure_count_total = float(self.bin_failed_count.sum())
         self.sampling_visit_count_total = float(self.bin_visit_count.sum())

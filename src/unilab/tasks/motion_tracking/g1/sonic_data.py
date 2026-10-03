@@ -602,6 +602,34 @@ def packed_store_clip_count(store: str | Path) -> int:
     return count
 
 
+def packed_store_clip_lengths(store: str | Path) -> np.ndarray:
+    """Return per-clip frame counts without loading any motion data.
+
+    Reads only the manifest and its side-car ``clip_lengths`` array; used to
+    build dataset-wide adaptive-sampling statistics for working-set training.
+    """
+    root = Path(store).expanduser().resolve()
+    manifest_path = root / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid SONIC packed manifest: {manifest_path}") from error
+    if manifest.get("format") != SONIC_PACKED_FORMAT:
+        raise ValueError(f"Unsupported SONIC packed format {manifest.get('format')!r}")
+    lengths_path = root / str(manifest.get("clip_lengths_file", ""))
+    if not lengths_path.is_file():
+        raise ValueError(f"SONIC packed manifest lacks clip_lengths_file: {manifest_path}")
+    try:
+        lengths = np.load(lengths_path, allow_pickle=False)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Invalid SONIC packed clip lengths: {lengths_path}") from error
+    if lengths.dtype != np.dtype(np.int32) or lengths.ndim != 1:
+        raise ValueError("SONIC packed clip_lengths must be a one-dimensional int32 array")
+    if len(lengths) != int(manifest.get("num_clips", -1)):
+        raise ValueError(f"SONIC packed clip length count mismatch: {manifest_path}")
+    return np.asarray(lengths, dtype=np.int32)
+
+
 class SonicPackedMotionLoader(_SonicMotionLoader):
     """Read a versioned SONIC store and materialize it into in-memory arrays.
 

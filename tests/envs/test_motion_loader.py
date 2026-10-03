@@ -661,3 +661,91 @@ def test_box_motion_loader_rejects_multi_clip_object_presence_mismatch(tmp_path)
 
     with np.testing.assert_raises(ValueError):
         BoxMotionLoader([str(motion_without_object), str(motion_with_object)])
+
+
+def test_motion_sampler_rotation_mode_inherits_global_statistics(tmp_path):
+    clips = []
+    lengths = [60, 80, 100, 120]
+    for idx, n in enumerate(lengths):
+        path = tmp_path / f"clip_{idx}.npz"
+        _write_motion_npz(path, base_value=float(idx), num_frames=n, fps=10)
+        clips.append(str(path))
+    all_lengths = np.asarray(lengths, dtype=np.int32)
+
+    def make_sampler(paths, ids, inherited=None):
+        loader = MotionLoader(paths)
+        return MotionSampler(
+            loader,
+            mode="adaptive",
+            num_envs=4,
+            adaptive_failure_stat="cumulative",
+            adaptive_failure_prior=1.0,
+            rng=np.random.default_rng(7),
+            all_clip_lengths=all_lengths,
+            active_clip_ids=np.asarray(ids, dtype=np.int64),
+            inherited_statistics=inherited,
+        )
+
+    # Subset A: clips {0, 1, 3}; dataset-wide bin width comes from the full
+    # 360 frames (ceil(360 / 37) = 10): clip0=6 bins, clip1=8, clip2=10,
+    # clip3=12 -> global offsets 0 / 6 / 14 / 24.
+    sampler_a = make_sampler([clips[0], clips[1], clips[3]], [0, 1, 3])
+    assert sampler_a.bin_failure_rate[0] == 1.0
+    # Three failures plus one success inside clip1's first local bin
+    # (local frames 60..62 map to global bins 6..6).
+    frames = np.array([60, 61, 62, 61], dtype=np.int32)
+    sampler_a.current_frames[:] = frames
+    sampler_a._episode_start_frames[:] = frames
+    sampler_a.update_failure_stats(
+        np.array([True, True, True, False]),
+        current_frames=sampler_a.current_frames,
+    )
+    exported = sampler_a.export_global_statistics()
+    assert exported is not None
+    failed, visited = exported
+    # Global bin table covers the whole dataset, not the active subset.
+    assert failed.size == 36
+    np.testing.assert_allclose(failed[6], 3.0)
+    np.testing.assert_allclose(visited[6], 4.0)
+    np.testing.assert_allclose(failed.sum(), 3.0)
+
+    # Subset B: clips {0, 2, 3} - clip1 leaves, clip2 enters. Statistics of
+    # the surviving clips must carry over; the new clip starts at prior.
+    sampler_b = make_sampler([clips[0], clips[2], clips[3]], [0, 2, 3], inherited=exported)
+    # Local layout now 6 / 10 / 12 bins; clip0 keeps its (unvisited) zeros.
+    np.testing.assert_allclose(sampler_b.bin_failed_count[:6], 0.0)
+    np.testing.assert_allclose(sampler_b.bin_visit_count[:6], 0.0)
+    # clip3 (local bins 16..27) maps to global 24..35: untouched zeros.
+    np.testing.assert_allclose(sampler_b.bin_failed_count[16:28], 0.0)
+    # Cumulative rate stays at the prior everywhere (no visits inherited yet
+    # outside clip1), and the export/import round trip is lossless.
+    re_exported = sampler_b.export_global_statistics()
+    np.testing.assert_allclose(re_exported[0], failed)
+    np.testing.assert_allclose(re_exported[1], visited)
+
+    # New observations in subset B accumulate onto the same global bins.
+    frames_b = np.array([70, 70, 70, 70], dtype=np.int32)  # clip2 local bin 1
+    sampler_b.current_frames[:] = frames_b
+    sampler_b._episode_start_frames[:] = frames_b
+    sampler_b.update_failure_stats(
+        np.array([False, False, False, True]),
+        current_frames=sampler_b.current_frames,
+    )
+    failed_b, visited_b = sampler_b.export_global_statistics()
+    np.testing.assert_allclose(failed_b[6], 3.0)  # clip1 history survives
+    np.testing.assert_allclose(visited_b[6], 4.0)
+    # clip2's first bin is global 14 (offset) + 1 (local bin within clip).
+    assert failed_b[14:24].sum() == 1.0
+    assert visited_b[14:24].sum() == 4.0
+
+
+def test_motion_sampler_non_rotation_mode_has_no_global_layer(tmp_path):
+    motion = tmp_path / "motion.npz"
+    _write_motion_npz(motion, base_value=0.0, num_frames=100, fps=10)
+    sampler = MotionSampler(
+        MotionLoader(str(motion)),
+        mode="adaptive",
+        num_envs=2,
+        rng=np.random.default_rng(3),
+    )
+    assert sampler.export_global_statistics() is None
