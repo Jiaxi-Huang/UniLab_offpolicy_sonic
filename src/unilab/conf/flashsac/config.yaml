@@ -23,18 +23,34 @@ algo:
   critic_hidden_dim: 256
   num_atoms: 101
   obs_normalization: false
-  use_layer_norm: false
   algo_params:
     normalize_reward: true
     normalized_g_max: 5.0
     actor_num_blocks: 2
     critic_num_blocks: 2
+    # Optional widened first stage of the actor/critic embedders
+    # (input -> widen -> hidden); null keeps the single-projection layout.
+    actor_embedder_dim: null
+    critic_embedder_dim: null
     actor_bc_alpha: 0.0
+    # "replay" = BC against replayed actions; "reference" = BC against the
+    # motion-reference joints packed in the next observation (SONIC only).
+    actor_bc_target: replay
+    # Optional linear anneal endpoint of actor_bc_alpha; null keeps it constant.
+    actor_bc_alpha_end: null
     actor_noise_zeta_mu: 2.0
     actor_noise_zeta_max: 16
     critic_min_v: -5.0
     critic_max_v: 5.0
     temp_initial_value: 0.01
+    # double-Q aggregation for TD targets and the actor loss: "min"
+    # (legacy pessimistic) or "mean" (collapse-resistant).
+    critic_q_reduction: min
+    # Short-episode replay throttle: rows from episodes that die within
+    # this many steps are capped at short_episode_quota of each write
+    # cycle; 0 disables the throttle.
+    short_episode_threshold: 0
+    short_episode_quota: 0.2
     temp_target_sigma: 0.15
     temp_target_entropy: null
     learning_rate_init: 3.0e-4

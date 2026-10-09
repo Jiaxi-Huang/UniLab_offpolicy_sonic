@@ -854,7 +854,7 @@ def build_play_actor(
             obs_dim,
             action_dim,
             cfg.algo.actor_hidden_dim,
-            cfg.algo.use_layer_norm,
+            False,
             device,
             actor_num_blocks=cfg.algo.algo_params.actor_num_blocks,
             actor_noise_zeta_mu=cfg.algo.algo_params.actor_noise_zeta_mu,
@@ -983,7 +983,7 @@ def create_sac_playback_session(
             obs_dim,
             action_dim,
             cfg.algo.actor_hidden_dim,
-            cfg.algo.use_layer_norm,
+            getattr(cfg.algo, "use_layer_norm", True) if actor_algo_type != "flashsac" else False,
             str(session_device),
             **actor_kwargs,
         )

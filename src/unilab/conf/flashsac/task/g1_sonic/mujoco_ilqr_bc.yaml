@@ -1,0 +1,16 @@
+# @package _global_
+# Group B: Group A plus reference-mode actor BC (SAC+BC). The expert action
+# for each transition is the next reference frame inverted through the env
+# action contract; the TD3+BC-style weight is annealed to 10% of its initial
+# value over learning_rate_decay_steps actor updates.
+defaults:
+  - /task/g1_sonic/mujoco_ilqr
+  - _self_
+
+training:
+  sim_backend: mujoco
+algo:
+  algo_params:
+    actor_bc_alpha: 2.5
+    actor_bc_target: reference
+    actor_bc_alpha_end: 0.25

@@ -67,12 +67,26 @@ class FlashSACAlgoParams:
     normalized_g_max: float = 5.0
     actor_num_blocks: int = 2
     critic_num_blocks: int = 2
+    # Optional widened first stage of the actor/critic embedders
+    # (input -> widen -> hidden); None keeps the single-projection layout.
+    actor_embedder_dim: Optional[int] = None
+    critic_embedder_dim: Optional[int] = None
     actor_bc_alpha: float = 0.0
+    # "replay" BCs against the replayed actions (legacy regularizer);
+    # "reference" BCs against the motion-reference joints reachable from the
+    # packed next observation (SONIC learners only).
+    actor_bc_target: str = "replay"
+    # Optional linear anneal endpoint for actor_bc_alpha over
+    # learning_rate_decay_steps actor updates; None keeps the weight constant.
+    actor_bc_alpha_end: Optional[float] = None
     actor_noise_zeta_mu: float = 2.0
     actor_noise_zeta_max: int = 16
     critic_min_v: float = -5.0
     critic_max_v: float = 5.0
     temp_initial_value: float = 0.01
+    critic_q_reduction: str = "min"
+    short_episode_threshold: int = 0
+    short_episode_quota: float = 0.2
     temp_target_sigma: float = 0.15
     temp_target_entropy: float | None = None
     learning_rate_init: float = 3e-4
@@ -83,6 +97,11 @@ class FlashSACAlgoParams:
     n_step: int = 1
     amp_dtype: str = "auto"
     use_compile: bool = True
+    compile_full_objectives: bool = False
+    use_cuda_graph_critic: bool = False
+    use_cuda_graph_actor: bool = False
+    use_cuda_graph_critic_packed_staging: bool = False
+    use_cuda_graph_actor_packed_staging: bool = False
 
 
 @dataclass
@@ -106,7 +125,6 @@ class FlashSACConfig(BaseConfig):
     critic_hidden_dim: int = 256
     num_atoms: int = 101
     obs_normalization: bool = False
-    use_layer_norm: bool = False
     algo_params: FlashSACAlgoParams = field(default_factory=FlashSACAlgoParams)
 
 

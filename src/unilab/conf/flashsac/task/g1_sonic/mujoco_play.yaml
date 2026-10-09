@@ -1,0 +1,58 @@
+# @package _global_
+defaults:
+  - /task/g1_sonic/base
+  - _self_
+
+training:
+  sim_backend: mujoco
+  sim2sim_strict: false
+  # Render the tracked reference motion as a translucent ghost robot next to
+  # the policy rollout in the playback video.
+  play_motion_ghost: true
+env:
+  terminations:
+    time_out: null
+    feet_pos: null
+    # Play keeps the per-clip truncation protocol: clip_end is the playback
+    # loop boundary, so the wrap-mode training default is pinned back here.
+    clip_end: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_clip_end, time_out: true}
+  commands:
+    motion:
+      params:
+        motion_file: data/sonic/robot_filtered
+        smpl_motion_file: data/sonic/smpl_filtered
+        motion_store_file: data/sonic/packed
+        encoder_sampling: g1
+        sampling_mode: clip_start
+        truncate_on_clip_end: true
+        anchor_pos_z_threshold: 0.25
+        anchor_ori_threshold: 1.0
+        ee_body_pos_z_threshold: 0.25
+        low_reference_anchor_pos_z_threshold: 0.25
+        low_reference_ee_body_pos_z_threshold: 0.25
+        pose_range:
+          x: [-0.0, 0.0]
+          y: [-0.0, 0.0]
+          z: [-0.0, 0.0]
+          roll: [-0., 0.]
+          pitch: [-0., 0.]
+          yaw: [-0., 0.]
+        velocity_range:
+          x: [-0., 0.]
+          y: [-0., 0.]
+          z: [-0., 0.]
+          roll: [-0., 0.]
+          pitch: [-0., 0.]
+          yaw: [-0., 0]
+        joint_position_range: [-0.0, 0.0]
+        joint_default_position_range: [0.0, 0.0]
+        joint_velocity_range: [0.0, 0.0]
+  actions:
+    joint_pos:
+      _target_: unilab.tasks.motion_tracking.g1.sonic_manager.SonicJointPositionActionCfg
+      simulate_action_latency: false
+      use_default_offset: true
+  events:
+    base_mass: null
+    base_com: null
+    encoder_bias: null

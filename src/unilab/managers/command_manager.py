@@ -165,6 +165,17 @@ class CommandTerm(ManagerTermBase):
                     host_rows = env_ids.detach().cpu().numpy().tolist()
                 metric_value[host_rows] = 0.0
 
+    def get_diagnostics(
+        self, *, include_histograms: bool = False
+    ) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+        """Return low-frequency scalar and histogram diagnostics for loggers.
+
+        Terms without diagnostics return empty mappings; this keeps the command
+        manager contract generic while allowing motion samplers to expose
+        distribution-level telemetry without backend-specific probing.
+        """
+        return {}, {}
+
     def compute(
         self, dt: float | np.ndarray | torch.Tensor, env_ids: torch.Tensor | None = None
     ) -> None:
@@ -511,6 +522,26 @@ class CommandManager(ManagerBase):
     def get_command(self, name: str) -> torch.Tensor:
         return self._validate_command(name, self._terms[name].command)
 
+    def get_diagnostics(
+        self, *, include_histograms: bool = False
+    ) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+        """Collect diagnostics from command terms using their public contract."""
+        scalars: dict[str, float] = {}
+        histograms: dict[str, np.ndarray] = {}
+        for name, term in self._terms.items():
+            term_scalars, term_histograms = term.get_diagnostics(
+                include_histograms=include_histograms
+            )
+            prefix = f"{name}/" if name else ""
+            scalars.update({f"{prefix}{key}": float(value) for key, value in term_scalars.items()})
+            histograms.update(
+                {
+                    f"{prefix}{key}": np.asarray(value, dtype=np.float32)
+                    for key, value in term_histograms.items()
+                }
+            )
+        return scalars, histograms
+
     def get_term(self, name: str) -> CommandTerm:
         return self._terms[name]
 
@@ -605,3 +636,9 @@ class NullCommandManager:
 
     def get_term_cfg(self, name: str) -> None:
         return None
+
+    def get_diagnostics(
+        self, *, include_histograms: bool = False
+    ) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+        del include_histograms
+        return {}, {}

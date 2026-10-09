@@ -598,6 +598,7 @@ class MotionCommand(CommandTerm):
             name="MotionCommand joint_default_position_range",
         )
 
+
         num_bodies = len(cfg.body_names)
         num_joints = self.motion.num_joints
         dtype = self.motion.joint_pos.dtype
@@ -651,6 +652,13 @@ class MotionCommand(CommandTerm):
             "sampling_entropy",
             "sampling_top1_prob",
             "sampling_top1_bin",
+            "sampling_effective_bin_count",
+            "sampling_visited_bin_fraction",
+            "sampling_failure_rate_mean",
+            "sampling_failure_rate_max",
+            "sampling_failure_count_total",
+            "sampling_visit_count_total",
+            "sampling_uniform_mass_actual",
         ):
             self.metrics[name] = np.zeros(self.num_envs, dtype=dtype)
         self._prepare_tensor_carrier()
@@ -690,7 +698,153 @@ class MotionCommand(CommandTerm):
         body_indices: np.ndarray,
     ) -> MotionLoader:
         """Materialize the profile-owned motion loader on the cold path."""
-        return MotionLoader(motion_file, body_indices=body_indices)
+        return MotionLoader(
+            motion_file,
+            body_indices=body_indices,
+            target_joint_names=tuple(self.robot.joint_names),
+        )
+
+    @staticmethod
+    def _validate_cfg(cfg: MotionCommandCfg) -> None:
+        if not isinstance(cfg.entity_name, str) or not cfg.entity_name:
+            raise ValueError("MotionCommandCfg entity_name must be non-empty")
+        if not isinstance(cfg.params, MotionCommandParamsCfg):
+            raise TypeError("MotionCommandCfg params must be MotionCommandParamsCfg")
+        if not cfg.motion_file:
+            raise ValueError("MotionCommandCfg motion_file must be configured")
+        if not cfg.anchor_body_name or cfg.anchor_body_name not in cfg.body_names:
+            raise ValueError("MotionCommandCfg anchor_body_name must occur in body_names")
+        if len(set(cfg.body_names)) != len(cfg.body_names):
+            raise ValueError("MotionCommandCfg body_names must be unique")
+        if cfg.sampling_mode not in ("start", "clip_start", "uniform", "adaptive", "mixed"):
+            raise ValueError(
+                f"MotionCommandCfg has unsupported sampling_mode {cfg.sampling_mode!r}"
+            )
+        if not 0.0 <= cfg.params.sampling_start_ratio <= 1.0:
+            raise ValueError("MotionCommandCfg sampling_start_ratio must be within [0, 1]")
+        if cfg.sampling_mode != "mixed" and cfg.params.sampling_start_ratio != 0.0:
+            raise ValueError(
+                "MotionCommandCfg sampling_start_ratio is only effective when sampling_mode='mixed'"
+            )
+        if not np.isfinite(cfg.params.adaptive_lambda) or not 0.0 < cfg.params.adaptive_lambda <= 1.0:
+            raise ValueError("MotionCommandCfg adaptive_lambda must be finite and within (0, 1]")
+        if cfg.params.adaptive_kernel_size < 1:
+            raise ValueError("MotionCommandCfg adaptive_kernel_size must be positive")
+        if not 0.0 <= cfg.params.adaptive_uniform_ratio <= 1.0:
+            raise ValueError("MotionCommandCfg adaptive_uniform_ratio must be within [0, 1]")
+        if not 0.0 < cfg.params.adaptive_alpha <= 1.0:
+            raise ValueError("MotionCommandCfg adaptive_alpha must be within (0, 1]")
+        if not isinstance(cfg.params.truncate_on_clip_end, bool):
+            raise TypeError("MotionCommandCfg truncate_on_clip_end must be bool")
+
+    @property
+    def command(self) -> np.ndarray:
+        return self._command
+
+    @property
+    def joint_pos(self) -> np.ndarray:
+        return self._motion_data.joint_pos
+
+    @property
+    def joint_vel(self) -> np.ndarray:
+        return self._motion_data.joint_vel
+
+    @property
+    def body_pos_w(self) -> np.ndarray:
+        return self._body_pos_w
+
+    @property
+    def body_quat_w(self) -> np.ndarray:
+        return self._motion_data.body_quat_w
+
+    @property
+    def body_lin_vel_w(self) -> np.ndarray:
+        return self._motion_data.body_lin_vel_w
+
+    @property
+    def body_ang_vel_w(self) -> np.ndarray:
+        return self._motion_data.body_ang_vel_w
+
+    @property
+    def anchor_pos_w(self) -> np.ndarray:
+        return self._body_pos_w[:, self.anchor_body_idx]
+
+    @property
+    def anchor_quat_w(self) -> np.ndarray:
+        return self._motion_data.body_quat_w[:, self.anchor_body_idx]
+
+    @property
+    def anchor_lin_vel_w(self) -> np.ndarray:
+        return self._motion_data.body_lin_vel_w[:, self.anchor_body_idx]
+
+    @property
+    def anchor_ang_vel_w(self) -> np.ndarray:
+        return self._motion_data.body_ang_vel_w[:, self.anchor_body_idx]
+
+    @property
+    def robot_joint_pos(self) -> np.ndarray:
+        return self.robot.data.joint_pos
+
+    @property
+    def robot_joint_vel(self) -> np.ndarray:
+        return self.robot.data.joint_vel
+
+    @property
+    def robot_body_pos_w(self) -> np.ndarray:
+        self._refresh_robot_state()
+        return self._robot_body_pos_w
+
+    @property
+    def robot_body_quat_w(self) -> np.ndarray:
+        self._refresh_robot_state()
+        return self._robot_body_quat_w
+
+    @property
+    def robot_body_lin_vel_w(self) -> np.ndarray:
+        self._refresh_robot_state()
+        return self._robot_body_lin_vel_w
+
+    @property
+    def robot_body_ang_vel_w(self) -> np.ndarray:
+        self._refresh_robot_state()
+        return self._robot_body_ang_vel_w
+
+    @property
+    def robot_anchor_pos_w(self) -> np.ndarray:
+        return self.robot_body_pos_w[:, self.anchor_body_idx]
+
+    @property
+    def robot_anchor_quat_w(self) -> np.ndarray:
+        return self.robot_body_quat_w[:, self.anchor_body_idx]
+
+    @property
+    def robot_anchor_lin_vel_w(self) -> np.ndarray:
+        return self.robot_body_lin_vel_w[:, self.anchor_body_idx]
+
+    @property
+    def robot_anchor_ang_vel_w(self) -> np.ndarray:
+        return self.robot_body_ang_vel_w[:, self.anchor_body_idx]
+
+    def reset(self, env_ids: np.ndarray | slice | None) -> dict[str, float]:
+        ids = (
+            np.arange(self.num_envs, dtype=np.int32)
+            if env_ids is None
+            else np.arange(self.num_envs, dtype=np.int32)[env_ids]
+            if isinstance(env_ids, slice)
+            else env_ids
+        )
+        # Row-wise error metrics are consumed only here (CommandTerm.reset logs
+        # per-episode means from these rows, then zeroes them). The per-step
+        # compute path skips the full-batch metrics kernel (issue #1355), so
+        # refresh exactly the rows being reset from the current post-step
+        # buffers — the same inputs the former per-step refresh used, keeping
+        # the consumed values bit-identical.
+        self._update_error_metrics(ids)
+        lower, upper = self._joint_default_position_range
+        self.joint_default_bias[ids] = self._env.rng.uniform(
+            lower, upper, size=(len(ids), self.motion.num_joints)
+        )
+        return super().reset(ids)
 
     def _refresh_motion(self, env_ids: np.ndarray | None = None) -> None:
         """Refresh motion-reference buffers from the current frame indices."""
@@ -901,9 +1055,19 @@ class MotionCommand(CommandTerm):
         # Sampler statistics are global scalars, so every row tracks them.
         # These scalar sampling settings and the Numba error kernel below are
         # still NumPy-owned; assert that migration boundary explicitly.
-        self._numpy_metric("sampling_entropy").fill(self.sampler.sampling_entropy)
-        self._numpy_metric("sampling_top1_prob").fill(self.sampler.sampling_top1_prob)
-        self._numpy_metric("sampling_top1_bin").fill(self.sampler.sampling_top1_bin)
+        for _name in (
+            "sampling_entropy",
+            "sampling_top1_prob",
+            "sampling_top1_bin",
+            "sampling_effective_bin_count",
+            "sampling_visited_bin_fraction",
+            "sampling_failure_rate_mean",
+            "sampling_failure_rate_max",
+            "sampling_failure_count_total",
+            "sampling_visit_count_total",
+            "sampling_uniform_mass_actual",
+        ):
+            self._numpy_metric(_name).fill(getattr(self.sampler, _name))
 
     def _numpy_metric(self, name: str) -> np.ndarray:
         value = self.metrics[name]
@@ -913,6 +1077,33 @@ class MotionCommand(CommandTerm):
                 "Numba kernel migrates to Torch."
             )
         return value
+
+    def get_diagnostics(
+        self, *, include_histograms: bool = False
+    ) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+        """Expose sampler summaries and distributions to off-policy loggers."""
+        sampler = self.sampler
+        histograms = {
+            "sampling_failure_rate": sampler.bin_failure_rate.copy(),
+            "sampling_probability": sampler._sampling_probs.copy(),
+            "sampling_visit_count": sampler.bin_visit_count.copy(),
+            "sampling_failure_count": sampler.bin_failed_count.copy(),
+        } if include_histograms else {}
+        return (
+            {
+                "sampling_entropy": sampler.sampling_entropy,
+                "sampling_top1_prob": sampler.sampling_top1_prob,
+                "sampling_top1_bin": sampler.sampling_top1_bin,
+                "sampling_effective_bin_count": sampler.sampling_effective_bin_count,
+                "sampling_visited_bin_fraction": sampler.sampling_visited_bin_fraction,
+                "sampling_failure_rate_mean": sampler.sampling_failure_rate_mean,
+                "sampling_failure_rate_max": sampler.sampling_failure_rate_max,
+                "sampling_failure_count_total": sampler.sampling_failure_count_total,
+                "sampling_visit_count_total": sampler.sampling_visit_count_total,
+                "sampling_uniform_mass_actual": sampler.sampling_uniform_mass_actual,
+            },
+            histograms,
+        )
 
     def _update_error_metrics(self, rows: np.ndarray) -> None:
         """Recompute the row-wise error metrics for the given rows."""
@@ -996,7 +1187,7 @@ class MotionCommand(CommandTerm):
         terminated = self._env.termination_manager.terminated
         if isinstance(terminated, torch.Tensor):
             terminated = terminated.detach().cpu().numpy()
-        self.sampler.update_failure_stats(terminated)
+        self.sampler.update_failure_stats(terminated, episode_done=self._env.reset_buf)
         active_ids = np.flatnonzero(~self._env.reset_buf).astype(np.int32, copy=False)
         wrap_ids = self.sampler.step(active_ids)
         if len(wrap_ids) and not self.cfg.params.truncate_on_clip_end:

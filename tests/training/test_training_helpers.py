@@ -427,9 +427,12 @@ def test_render_play_mode_uses_env_interactive_contract():
             kwargs = _resolve_low_level_playback_flags(kwargs)
             kwargs.pop("frame_state_getter", None)
             # FakeEnv mimics the real backend boundary: debug overlays and
-            # on_frame fail closed downstream; here they are simply unused.
+            # on_frame fail closed downstream; the SONIC ghost-overlay kwargs
+            # are likewise dropped at this fake boundary.
             kwargs.pop("debug_overlay_getter", None)
             kwargs.pop("on_frame", None)
+            kwargs.pop("ghost_state_getter", None)
+            kwargs.pop("ghost_joint_names", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
         def init_renderer(self, **kwargs):
@@ -569,9 +572,12 @@ def test_render_play_mode_uses_motrix_native_video_capture(
             kwargs = _resolve_low_level_playback_flags(kwargs)
             kwargs.pop("frame_state_getter", None)
             # FakeEnv mimics the real backend boundary: debug overlays and
-            # on_frame fail closed downstream; here they are simply unused.
+            # on_frame fail closed downstream; the SONIC ghost-overlay kwargs
+            # are likewise dropped at this fake boundary.
             kwargs.pop("debug_overlay_getter", None)
             kwargs.pop("on_frame", None)
+            kwargs.pop("ghost_state_getter", None)
+            kwargs.pop("ghost_joint_names", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
         def init_renderer(self, **kwargs):
@@ -640,9 +646,12 @@ def test_render_play_mode_rejects_motrix_record_with_interactive_window(
             kwargs = _resolve_low_level_playback_flags(kwargs)
             kwargs.pop("frame_state_getter", None)
             # FakeEnv mimics the real backend boundary: debug overlays and
-            # on_frame fail closed downstream; here they are simply unused.
+            # on_frame fail closed downstream; the SONIC ghost-overlay kwargs
+            # are likewise dropped at this fake boundary.
             kwargs.pop("debug_overlay_getter", None)
             kwargs.pop("on_frame", None)
+            kwargs.pop("ghost_state_getter", None)
+            kwargs.pop("ghost_joint_names", None)
             return run_motrix_playback(backend=self, env=self, **kwargs)
 
         def init_renderer(self, **kwargs):

@@ -89,6 +89,9 @@ class ManagerEntity(Protocol):
     @property
     def num_pairs(self) -> int: ...
 
+    @property
+    def data(self) -> Any: ...
+
     def find_joints(
         self, keys: str | Sequence[str], preserve_order: bool = False
     ) -> tuple[list[int], list[str]]: ...
@@ -155,6 +158,18 @@ class ManagerEntity(Protocol):
         env_ids: torch.Tensor,
     ) -> None: ...
 
+    def write_root_link_pose_to_sim(
+        self,
+        root_pose: np.ndarray,
+        env_ids: np.ndarray | slice | None = None,
+    ) -> None: ...
+
+    def write_root_link_velocity_to_sim(
+        self,
+        root_velocity: np.ndarray,
+        env_ids: np.ndarray | slice | None = None,
+    ) -> None: ...
+
 
 class ManagerSensorView(Protocol):
     """Backend-owned named-sensor view retained by a manager term."""
@@ -170,6 +185,9 @@ class ManagerSensorView(Protocol):
 
     @property
     def data(self) -> np.ndarray: ...
+
+    @property
+    def width(self) -> int: ...
 
     def read(self) -> np.ndarray: ...
 

@@ -1319,6 +1319,11 @@ class ManagerBasedRlEnv(TorchEnv):
         ) * 1000.0
         timing["update_state_command_ms"] = (time.perf_counter() - phase_started) * 1000.0
         phase_started = time.perf_counter()
+        command_diagnostics, _ = self.command_manager.get_diagnostics()
+        if command_diagnostics:
+            state.info["adaptive_sampling"] = {
+                "scalars": command_diagnostics,
+            }
 
         manager_obs = self.observation_manager.compute(update_history=True)
         observation_timing = getattr(self.observation_manager, "last_step_timing_ms", {})

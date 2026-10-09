@@ -1,0 +1,39 @@
+# @package _global_
+# LAFAN1 training recipe synced from the recorded run
+# logs/flash_sac/G1SonicManager/2026-09-10_03-13-09_mujoco_gpux4/run_config.json.
+# Reproduce the 4-GPU data-parallel launch with training.devices=[0,1,2,3].
+defaults:
+  - /task/g1_sonic/base
+  - _self_
+
+training:
+  sim_backend: mujoco
+  devices: [0,1,2,3]
+algo:
+  num_envs: 4096
+  batch_size: 2048
+  replay_buffer_n: 1024
+  updates_per_step: 4
+  learning_starts: 24
+  actor_lr: 1.0e-4
+  algo_params:
+    actor_bc_alpha: 0.01
+    learning_rate_end: 5.0e-5
+    log_std_max: 0.0
+env:
+  commands:
+    motion:
+      params:
+        motion_file: data/sonic/robot_filtered
+        smpl_motion_file: data/sonic/smpl_filtered
+        motion_store_file: data/sonic/packed
+        max_loaded_clips: 1024
+        clip_rotation_interval_steps: 2500
+        encoder_sampling: mixed
+        sampling_mode: adaptive
+        adaptive_kernel_size: 1
+        adaptive_uniform_ratio: 0.1
+        #adaptive_alpha: 0.05
+        #adaptive_failure_rate_max_over_mean: 30.0
+  events:
+    encoder_bias: null

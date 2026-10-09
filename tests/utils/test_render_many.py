@@ -239,3 +239,118 @@ def test_render_states_get_frames_fails_fast_on_worker_init_error(monkeypatch) -
     )
 
     assert frames == []
+
+
+def _reload_render_many_real():
+    """Import render_many against the real mujoco bindings."""
+    sys.modules.pop("unilab.visualization.render_many", None)
+    return importlib.import_module("unilab.visualization.render_many")
+
+
+_GHOST_TEST_XML = """
+<mujoco>
+  <worldbody>
+    <geom name="floor" type="plane" size="1 1 0.1"/>
+    <body name="root" pos="0 0 1">
+      <freejoint name="root_free"/>
+      <geom name="root_visual" type="capsule" fromto="0 0 0 0 0 0.2" size="0.05"
+        contype="0" conaffinity="0"/>
+      <geom name="root_collision" type="sphere" size="0.06"/>
+      <body name="child" pos="0 0 0.2">
+        <joint name="hinge_a" type="hinge" axis="0 1 0"/>
+        <geom name="child_visual" type="box" size="0.05 0.05 0.05"
+          contype="0" conaffinity="0"/>
+        <body name="leaf" pos="0 0 0.1">
+          <joint name="hinge_b" type="hinge" axis="1 0 0"/>
+          <geom name="leaf_visual" type="sphere" size="0.03" contype="0" conaffinity="0"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def test_prepare_ghost_model_tints_visual_geoms_and_maps_joints() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    render_many = _reload_render_many_real()
+    model = mujoco.MjModel.from_xml_string(_GHOST_TEST_XML)
+
+    ghost = render_many._prepare_ghost_model(model, ("hinge_a", "hinge_b"))
+
+    def geom_rgba(name: str) -> np.ndarray:
+        geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        assert geom_id >= 0
+        return model.geom_rgba[geom_id]
+
+    np.testing.assert_allclose(geom_rgba("root_visual"), render_many.GHOST_RGBA)
+    np.testing.assert_allclose(geom_rgba("child_visual"), render_many.GHOST_RGBA)
+    np.testing.assert_allclose(geom_rgba("leaf_visual"), render_many.GHOST_RGBA)
+    # Collision and world geoms are hidden so the overlay stays a clean shell.
+    assert geom_rgba("root_collision")[3] == 0.0
+    assert geom_rgba("floor")[3] == 0.0
+    # The first free joint anchors the ghost root pose block.
+    assert ghost["root_adr"] == 0
+    hinge_ids = [
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        for name in ("hinge_a", "hinge_b")
+    ]
+    np.testing.assert_array_equal(
+        ghost["joint_adrs"], [model.jnt_qposadr[hinge_ids[0]], model.jnt_qposadr[hinge_ids[1]]]
+    )
+    assert ghost["vopt"].flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT]
+
+
+def test_prepare_ghost_model_rejects_unknown_joint() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    render_many = _reload_render_many_real()
+    model = mujoco.MjModel.from_xml_string(_GHOST_TEST_XML)
+
+    with pytest.raises(ValueError, match="missing from the playback model"):
+        render_many._prepare_ghost_model(model, ("hinge_a", "nope"))
+
+
+def test_add_ghost_geoms_poses_twin_and_appends_dynamic_geoms() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    render_many = _reload_render_many_real()
+    model = mujoco.MjModel.from_xml_string(_GHOST_TEST_XML)
+    ghost = render_many._prepare_ghost_model(model, ("hinge_a", "hinge_b"))
+    scene = mujoco.MjvScene(model, 100)
+    geoms_before = scene.ngeom
+
+    row = np.array([1.5, -2.0, 0.9, 1.0, 0.0, 0.0, 0.0, 0.25, -0.5], dtype=np.float64)
+    render_many._add_ghost_geoms(
+        ghost, row, np.array([10.0, 4.0]), mujoco.MjvPerturb(), scene
+    )
+
+    # Only robot geoms are dynamic; the worldbody floor is never duplicated.
+    assert scene.ngeom - geoms_before >= 3
+    data = ghost["data"]
+    np.testing.assert_allclose(data.qpos[0:3], [11.5, 2.0, 0.9])
+    np.testing.assert_allclose(data.qpos[3:7], [1.0, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(data.qpos[ghost["joint_adrs"]], [0.25, -0.5])
+    # mj_kinematics ran: the root body world pose follows the offset ghost qpos.
+    root_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "root")
+    np.testing.assert_allclose(data.xpos[root_body], [11.5, 2.0, 0.9], atol=1e-6)
+
+
+def test_render_states_get_frames_requires_paired_ghost_args() -> None:
+    render_many = _reload_render_many_real()
+
+    with pytest.raises(ValueError, match="ghost"):
+        render_many.render_states_get_frames(
+            [np.zeros((1, 8), dtype=np.float32)],
+            "/no/such/model.xml",
+            ghost_qpos_list=[np.zeros((1, 9), dtype=np.float32)],
+        )
+
+
+def test_render_states_get_frames_tracking_requires_paired_ghost_args() -> None:
+    render_many = _reload_render_many_real()
+
+    with pytest.raises(ValueError, match="ghost"):
+        render_many.render_states_get_frames_tracking(
+            [np.zeros((1, 8), dtype=np.float32)],
+            "/no/such/model.xml",
+            ghost_joint_names=("hinge_a",),
+        )

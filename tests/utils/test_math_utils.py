@@ -17,6 +17,7 @@ from unilab.utils.rotation import (
     np_quat_error_magnitude_squared_batched,
     np_quat_from_angle_axis,
     np_quat_from_euler_xyz,
+    np_quat_heading,
     np_quat_mul,
     np_quat_mul_batched,
     np_quat_to_axis_angle,
@@ -207,6 +208,23 @@ def test_quat_apply_inverse_batched_matches_matrix_transpose() -> None:
         vectors,
         atol=1e-12,
     )
+
+
+def test_quat_heading_matches_gear_heading_quaternion() -> None:
+    """Heading extraction keeps w/z and normalizes, including roll/pitch input."""
+    quat = np_quat_from_euler_xyz(
+        np.asarray([0.7, -0.4]),
+        np.asarray([-0.3, 0.2]),
+        np.asarray([1.1, -0.8]),
+    )
+    original = quat.copy()
+    expected = np.zeros_like(quat)
+    expected[:, 0] = quat[:, 0]
+    expected[:, 3] = quat[:, 3]
+    expected /= np.maximum(np.linalg.norm(expected, axis=-1, keepdims=True), 1.0e-9)
+    actual = np_quat_heading(quat)
+    np.testing.assert_allclose(actual, expected, atol=1.0e-12)
+    np.testing.assert_array_equal(quat, original)
 
 
 def test_anchor_frame_transform_matches_flattened_path() -> None:
