@@ -1,0 +1,36 @@
+# @package _global_
+# FastSAC IsaacGym owner for G1 WBT (subprocess backend; physics runs in a
+# Python 3.8 worker). Keeps DENYLIST parity with the MuJoCo owner so
+# cross-backend play transfers 1:1. Requires unisim-core>=1.7.4: the worker
+# consumes mjcf_body_names/mjcf_kinematics and publishes exact post-reset FK
+# body state (unilabsim/unisim#141, PR #145), which motion tracking reads every
+# step. The legacy raw-MJCF path declares an empty DR capability set
+# (fail-closed), so the MuJoCo owner's reset model-field terms and the interval
+# velocity push all stay disabled here. Playback uses IsaacGym native
+# rendering: with a display, play_render_mode=auto opens the interactive
+# viewer; headless hosts fall back to offscreen camera-sensor recording.
+defaults:
+  - /task/g1_motion_tracking/mujoco
+  - _self_
+
+training:
+  task_name: G1MotionTrackingSAC
+  sim_backend: isaacgym
+  play_render_mode: auto
+env:
+  # GPU device index handed to the worker sim; unset defaults to device 0.
+  isaacgym_device_id: 0
+  render_spacing: 2.0
+  scene:
+    entities:
+      robot:
+        # The isaacgym legacy path does not expose geom names; the foot-geom
+        # declaration only feeds the disabled foot_friction DR binding.
+        geom_names: null
+  events:
+    # The isaacgym legacy path declares no reset model-field or interval
+    # capabilities, so the inherited DR stack stays disabled.
+    base_com: null
+    encoder_bias: null
+    foot_friction: null
+    push_robot: null

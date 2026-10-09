@@ -1,0 +1,45 @@
+# @package _global_
+# FastSAC Newton owner for G1 WBT. Newton's runtime is optional and shares the
+# MuJoCo 3.11 / MuJoCo-Warp 3.11 / Warp 1.16 line with the mujoco/mjwarp
+# extras; process device binding supplies the rank-local CUDA device when
+# ``newton_device`` is left unset. Keeps DENYLIST parity with the MuJoCo owner
+# so cross-backend play transfers 1:1. Requires unisim-core>=1.6.0 for the
+# motion body id capability and CUDA graph execution. Newton declares an empty
+# DR capability set: no geom names, no model-field reset terms, no interval
+# velocity delta, so base_com/foot_friction/push_robot stay disabled;
+# encoder_bias is a host-side observation bias and stays enabled. Native
+# ViewerGL rendering (offline record + interactive) is provided by the
+# backend; playback inherits the base config's auto mode.
+defaults:
+  - /task/g1_motion_tracking/mujoco
+  - _self_
+
+training:
+  task_name: G1MotionTrackingSAC
+  sim_backend: newton
+  # Newton compiles its Warp kernels on the materialize cold path, which
+  # exceeds the runner's default 30 s collector tick-0 budget; raise it for
+  # this backend (same precedent as the Genesis owner).
+  inference_request_timeout_sec: 180.0
+env:
+  # A null device is intentional: the off-policy collector binder injects the
+  # rank-local CUDA device before materialization. 320/512 leaves headroom
+  # over the observed fall-contact demand measured on g1_walk_flat.
+  newton_device: null
+  newton_nconmax: 320
+  newton_njmax: 512
+  newton_capacity_check_steps: 1
+  newton_use_cuda_graph: true
+  render_spacing: 2.0
+  scene:
+    entities:
+      robot:
+        # The newton backend does not expose geom names; the foot-geom
+        # declaration only feeds the disabled foot_friction DR binding.
+        geom_names: null
+  events:
+    # Newton declares an empty DR capability set: no model-field reset terms
+    # and no interval velocity delta; keep the owner fail-closed.
+    base_com: null
+    foot_friction: null
+    push_robot: null

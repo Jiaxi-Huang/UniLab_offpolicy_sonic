@@ -29,10 +29,10 @@ for _task_name in G1_MOTION_TASKS:
 registry.register_env("G1MotionTrackingSAC", make_manager_based_rl_env, sim_backend="mjwarp")
 
 # genesis/newton implement the motion-body-id capability since unisim-core 1.5.1
-# (unilabsim/unisim#137); isaacgym/isaacsim join them since unisim-core 1.7.4
-# fixed the subprocess body-state publish/reset paths (unilabsim/unisim#141,
-# PR #145).
-for _backend in ("genesis", "newton", "isaacgym", "isaacsim"):
+# (unilabsim/unisim#137). isaacgym/isaacsim are temporarily outside the
+# tensor-only Manager runtime scope (issue #1811); their owner YAMLs are
+# retained but not registered.
+for _backend in ("genesis", "newton"):
     registry.register_env("G1MotionTrackingSAC", make_manager_based_rl_env, sim_backend=_backend)
 
 # One semantic task identity serves PPO/APPO/SAC/FlashSAC; the base tracking
