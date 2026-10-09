@@ -1275,9 +1275,10 @@ def _export_robot_npz(
         root_pos=xs[:, :3],
         root_quat_wxyz=quat,
         root_lin_vel=xs[:, nq : nq + 3],
-        # MuJoCo free-joint angular velocity is body-local; the source
-        # pipeline stores the same convention, so pass it through unchanged.
-        root_ang_vel=xs[:, nq + 3 : nq + 6],
+        # MuJoCo free-joint angular velocity is body-local while
+        # ``materialize_reference_kinematics`` expects world-frame input;
+        # rotate the plan's local angular velocity into the world frame.
+        root_ang_vel=_rotate(quat, xs[:, nq + 3 : nq + 6]),
         joint_pos=joint_pos_act,
         joint_vel=joint_vel_act,
         body_names=G1_SONIC_BODY_NAMES,
