@@ -25,6 +25,8 @@ from unilab.scripts.train_offpolicy import (
     build_failure_summary,
     build_run_dir_name,
     enable_faulthandler,
+    _build_dp_rank_supervisor,
+    _prepare_rank_zero_dp_visibility,
 )
 from unilab.training import (
     apply_configured_training_seed,
@@ -46,6 +48,10 @@ def run(cfg: DictConfig) -> None:
 
     devices = resolve_dp_topology(getattr(cfg.training, "devices", None))
     rank = current_dp_rank()
+    world_size = len(devices) if devices is not None else 1
+    # Rank 0 keeps only its one-entry slice of the parent visibility mask;
+    # the supervisor constructor restores the full mask when spawning ranks.
+    _prepare_rank_zero_dp_visibility(world_size)
     rank_device = apply_rank_config(cfg)
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
     algo_name = cfg.algo.algo
@@ -68,7 +74,7 @@ def run(cfg: DictConfig) -> None:
     supervisor: DpRankSupervisor | None = None
     if devices is not None and rank == 0 and len(devices) > 1:
         validate_dp_launchable(devices)
-        supervisor = DpRankSupervisor(len(devices), log_dir)
+        supervisor = _build_dp_rank_supervisor(len(devices), log_dir)
 
     import torch
 
