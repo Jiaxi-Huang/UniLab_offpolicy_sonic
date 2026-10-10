@@ -47,6 +47,10 @@ def run(cfg: DictConfig) -> None:
     ensure_registries()
 
     devices = resolve_dp_topology(getattr(cfg.training, "devices", None))
+    if devices is not None and len(devices) > 1:
+        # Validate against the full parent visibility BEFORE rank 0 narrows
+        # its own mask to one entry.
+        validate_dp_launchable(devices)
     rank = current_dp_rank()
     world_size = len(devices) if devices is not None else 1
     # Rank 0 keeps only its one-entry slice of the parent visibility mask;
@@ -73,7 +77,6 @@ def run(cfg: DictConfig) -> None:
 
     supervisor: DpRankSupervisor | None = None
     if devices is not None and rank == 0 and len(devices) > 1:
-        validate_dp_launchable(devices)
         supervisor = _build_dp_rank_supervisor(len(devices), log_dir)
 
     import torch

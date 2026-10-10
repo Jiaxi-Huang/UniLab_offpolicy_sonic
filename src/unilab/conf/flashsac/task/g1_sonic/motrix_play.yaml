@@ -5,6 +5,7 @@ defaults:
 
 training:
   sim_backend: motrix
+  sim2sim_strict: false
 env:
   terminations:
     # Playback should not reset every base-configured 10 seconds.
