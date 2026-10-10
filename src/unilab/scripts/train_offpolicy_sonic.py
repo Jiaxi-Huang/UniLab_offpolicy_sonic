@@ -68,7 +68,7 @@ def run(cfg: DictConfig) -> None:
     supervisor: DpRankSupervisor | None = None
     if devices is not None and rank == 0 and len(devices) > 1:
         validate_dp_launchable(devices)
-        supervisor = DpRankSupervisor(devices, log_dir)
+        supervisor = DpRankSupervisor(len(devices), log_dir)
 
     import torch
 
