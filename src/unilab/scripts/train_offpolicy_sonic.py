@@ -47,11 +47,11 @@ def run(cfg: DictConfig) -> None:
     ensure_registries()
 
     devices = resolve_dp_topology(getattr(cfg.training, "devices", None))
-    if devices is not None and len(devices) > 1:
-        # Validate against the full parent visibility BEFORE rank 0 narrows
-        # its own mask to one entry.
-        validate_dp_launchable(devices)
     rank = current_dp_rank()
+    if rank == 0 and devices is not None and len(devices) > 1:
+        # Validate against the full parent visibility BEFORE rank 0 narrows
+        # its own mask; re-entered worker ranks already own one entry each.
+        validate_dp_launchable(devices)
     world_size = len(devices) if devices is not None else 1
     # Rank 0 keeps only its one-entry slice of the parent visibility mask;
     # the supervisor constructor restores the full mask when spawning ranks.
