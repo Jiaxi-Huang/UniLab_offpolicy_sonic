@@ -19,8 +19,8 @@ from unilab.base.env_factory import registry_env_factory
 from unilab.envs import ManagerBasedRlEnv
 from unilab.tasks.motion_tracking.g1.sonic_manager import SonicJointPositionAction
 from unilab.training import create_env, ensure_registries
-from unilab.utils.device import get_default_device
 from unilab.training.tensor_diagnostics import NanGuardCfg
+from unilab.utils.device import get_default_device
 from unilab.utils.seed import apply_training_seed
 
 if TYPE_CHECKING:
@@ -60,6 +60,13 @@ def _auxiliary_config(cfg: DictConfig) -> SonicAuxLossConfig:
         "algo.sonic.auxiliary",
     )
     return SonicAuxLossConfig(**values)
+
+
+def _tensor_nan_guard_factory():
+    """UniLab's TensorNanGuard constructor for the tensor-native runtime."""
+    from unilab.training.tensor_runtime_hooks import build_tensor_nan_guard_factory
+
+    return build_tensor_nan_guard_factory()
 
 
 def build_sonic_flashsac_runner(
@@ -208,6 +215,7 @@ def build_sonic_flashsac_runner(
         trace_cuda_events=cfg.training.trace_cuda_events,
         replay_prefetch_mode=replay_prefetch_mode,
         nan_guard_cfg=nan_guard_cfg,
+        nan_guard_factory=_tensor_nan_guard_factory(),
         torch_thread_runtime=torch_thread_runtime,
         collector_cpu_ids=collector_cpu_ids,
         dp_sync=dp_sync,
