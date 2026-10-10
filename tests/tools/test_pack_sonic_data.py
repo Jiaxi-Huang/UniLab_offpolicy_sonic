@@ -79,8 +79,39 @@ def _build_store(tmp_path: Path) -> tuple[Path, Path]:
         "num_clips": 2,
         "num_frames": 22,
         "size_bytes": 22 * (29 * 2 + 3 * (3 + 4 + 3 + 3) + 24 * 3 + 4) * 4 + 8,
+        "filtered_clip_count": 0,
     }
     return source, output
+
+
+def test_packer_excludes_blacklisted_clips_by_default(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_pair(source, "clip_a", 10, 0.0)
+    _write_pair(source, "sit_croos_legged_loop_002__A021", 12, 100_000.0)
+    _write_pair(source, "sit_croos_legged_loop_002__A021_M", 12, 100_000.0)
+
+    output = tmp_path / "packed"
+    summary = pack_sonic_dataset(source / "robot", source / "smpl", output)
+    assert summary["filtered_clip_count"] == 2
+    assert summary["num_clips"] == 1
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["filter"] == {
+        "applied": True,
+        "filtered_clip_count": 2,
+        "filtered_clips": [
+            "sit_croos_legged_loop_002__A021",
+            "sit_croos_legged_loop_002__A021_M",
+        ],
+    }
+    names = (output / "clip_names.txt").read_text(encoding="utf-8").split()
+    assert names == ["clip_a"]
+
+    kept = tmp_path / "packed_unfiltered"
+    unfiltered = pack_sonic_dataset(source / "robot", source / "smpl", kept, exclude_filtered=False)
+    assert unfiltered["filtered_clip_count"] == 0
+    assert unfiltered["num_clips"] == 3
+    kept_manifest = json.loads((kept / "manifest.json").read_text(encoding="utf-8"))
+    assert kept_manifest["filter"]["applied"] is False
 
 
 def _write_continuity_pair(root: Path, name: str, count: int, jump_at: int) -> None:

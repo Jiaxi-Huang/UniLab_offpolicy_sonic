@@ -579,9 +579,7 @@ def render_states_get_frames(
         return []
 
     if (ghost_qpos_list is None) != (ghost_joint_names is None):
-        raise ValueError(
-            "Ghost overlay requires both ghost_qpos_list and ghost_joint_names."
-        )
+        raise ValueError("Ghost overlay requires both ghost_qpos_list and ghost_joint_names.")
 
     if not render_backend_usable():
         _warn_render_unavailable()
@@ -873,9 +871,7 @@ def render_states_get_frames_tracking(
         return []
 
     if (ghost_qpos_list is None) != (ghost_joint_names is None):
-        raise ValueError(
-            "Ghost overlay requires both ghost_qpos_list and ghost_joint_names."
-        )
+        raise ValueError("Ghost overlay requires both ghost_qpos_list and ghost_joint_names.")
 
     if not render_backend_usable():
         _warn_render_unavailable()

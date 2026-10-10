@@ -824,7 +824,10 @@ class SonicMotionCommand(CommandTerm):
     def command(self) -> np.ndarray:
         return self._command
 
-    def reset(self, env_ids: np.ndarray | slice | None) -> dict[str, float]:
+    def reset(
+        self, env_ids: np.ndarray | slice | None, *, publish_metrics: bool = True
+    ) -> dict[str, float]:
+        del publish_metrics  # the SONIC command reports no reset metrics
         ids = np.arange(self.num_envs)[env_ids] if isinstance(env_ids, slice) else env_ids
         if ids is None:
             ids = np.arange(self.num_envs)
@@ -1260,8 +1263,16 @@ class SonicMotionCommand(CommandTerm):
         # env-level termination buffer, not the termination manager, so
         # failure statistics stay unpolluted; the standard autoreset
         # pipeline then reruns the reset on the new subset.
-        self._env.reset_terminated[:] = True
-        np.logical_or(self._env.reset_buf, self._env.reset_terminated, out=self._env.reset_buf)
+        import torch
+
+        reset_terminated = self._env.reset_terminated
+        reset_buf = self._env.reset_buf
+        if isinstance(reset_buf, torch.Tensor):
+            reset_terminated = torch.as_tensor(reset_terminated, device=reset_buf.device)
+            reset_buf |= reset_terminated.to(reset_buf.dtype)
+        else:
+            reset_terminated[:] = True
+            np.logical_or(reset_buf, reset_terminated, out=reset_buf)
 
     def _init_reference_feature_cache(self, loader: _SonicMotionLoader) -> None:
         """Materialize per-frame reference features on the cold path.
@@ -1487,6 +1498,10 @@ class SonicJointPositionAction(JointPositionAction):
         # below in this owner layer.
         super().__init__(replace(cfg, scale=1.0), env)
         self.cfg = cfg
+        # The tensor-native BaseAction allocates torch action buffers; the
+        # SONIC term's hot path (process/apply/BC inversion) is NumPy-owned.
+        self._raw_actions = np.zeros((self.num_envs, self.action_dim), dtype=np.float32)
+        self._processed_actions = np.zeros_like(self._raw_actions)
         target_ids, target_names = self._entity.find_joints(G1_SONIC_JOINTS, preserve_order=True)
         if tuple(target_names) != G1_SONIC_JOINTS:
             raise ValueError("SONIC action targets do not match the released policy order")
@@ -1516,11 +1531,23 @@ class SonicJointPositionAction(JointPositionAction):
             self._scale = scale.reshape(1, self.action_dim)
         self.joint_velocity_before_action = np.zeros_like(self._raw_actions)
 
-    def process_actions(self, actions: np.ndarray) -> None:
+    def validate_actions(self) -> None:
+        """Validate the NumPy-owned raw action buffer (torch base expects tensors)."""
+        if not bool(np.isfinite(self._raw_actions).all()):
+            raise ValueError(f"{type(self).__name__} received NaN or Inf actions")
+
+    def process_actions(self, actions: np.ndarray | torch.Tensor) -> None:
+        import torch  # the tensor-native Manager runtime forwards torch actions
+
+        if isinstance(actions, torch.Tensor):
+            # The SONIC term's hot path stays NumPy-owned.
+            actions = actions.detach().cpu().numpy()
         self.joint_velocity_before_action[:] = self._entity.data.joint_vel[:, self._target_ids]
         self._raw_actions[:] = actions
         cfg = cast(SonicJointPositionActionCfg, self.cfg)
         executed = self._env.action_manager.prev_action if cfg.simulate_action_latency else actions
+        if isinstance(executed, torch.Tensor):
+            executed = executed.detach().cpu().numpy()
         np.multiply(executed, self._scale, out=self._processed_actions)
         np.add(self._processed_actions, self._offset, out=self._processed_actions)
         if not cfg.clip_to_joint_limits:

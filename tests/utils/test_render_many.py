@@ -292,8 +292,7 @@ def test_prepare_ghost_model_tints_visual_geoms_and_maps_joints() -> None:
     # The first free joint anchors the ghost root pose block.
     assert ghost["root_adr"] == 0
     hinge_ids = [
-        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-        for name in ("hinge_a", "hinge_b")
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) for name in ("hinge_a", "hinge_b")
     ]
     np.testing.assert_array_equal(
         ghost["joint_adrs"], [model.jnt_qposadr[hinge_ids[0]], model.jnt_qposadr[hinge_ids[1]]]
@@ -319,9 +318,7 @@ def test_add_ghost_geoms_poses_twin_and_appends_dynamic_geoms() -> None:
     geoms_before = scene.ngeom
 
     row = np.array([1.5, -2.0, 0.9, 1.0, 0.0, 0.0, 0.0, 0.25, -0.5], dtype=np.float64)
-    render_many._add_ghost_geoms(
-        ghost, row, np.array([10.0, 4.0]), mujoco.MjvPerturb(), scene
-    )
+    render_many._add_ghost_geoms(ghost, row, np.array([10.0, 4.0]), mujoco.MjvPerturb(), scene)
 
     # Only robot geoms are dynamic; the worldbody floor is never duplicated.
     assert scene.ngeom - geoms_before >= 3

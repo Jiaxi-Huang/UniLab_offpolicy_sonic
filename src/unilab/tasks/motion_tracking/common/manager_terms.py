@@ -598,7 +598,6 @@ class MotionCommand(CommandTerm):
             name="MotionCommand joint_default_position_range",
         )
 
-
         num_bodies = len(cfg.body_names)
         num_joints = self.motion.num_joints
         dtype = self.motion.joint_pos.dtype
@@ -726,7 +725,10 @@ class MotionCommand(CommandTerm):
             raise ValueError(
                 "MotionCommandCfg sampling_start_ratio is only effective when sampling_mode='mixed'"
             )
-        if not np.isfinite(cfg.params.adaptive_lambda) or not 0.0 < cfg.params.adaptive_lambda <= 1.0:
+        if (
+            not np.isfinite(cfg.params.adaptive_lambda)
+            or not 0.0 < cfg.params.adaptive_lambda <= 1.0
+        ):
             raise ValueError("MotionCommandCfg adaptive_lambda must be finite and within (0, 1]")
         if cfg.params.adaptive_kernel_size < 1:
             raise ValueError("MotionCommandCfg adaptive_kernel_size must be positive")
@@ -1053,21 +1055,18 @@ class MotionCommand(CommandTerm):
             )
             self._update_error_metrics(rows)
         # Sampler statistics are global scalars, so every row tracks them.
-        # These scalar sampling settings and the Numba error kernel below are
-        # still NumPy-owned; assert that migration boundary explicitly.
-        for _name in (
-            "sampling_entropy",
-            "sampling_top1_prob",
-            "sampling_top1_bin",
-            "sampling_effective_bin_count",
-            "sampling_visited_bin_fraction",
-            "sampling_failure_rate_mean",
-            "sampling_failure_rate_max",
-            "sampling_failure_count_total",
-            "sampling_visit_count_total",
-            "sampling_uniform_mass_actual",
-        ):
-            self._numpy_metric(_name).fill(getattr(self.sampler, _name))
+        self.metrics["sampling_entropy"].fill(self.sampler.sampling_entropy)
+        self.metrics["sampling_top1_prob"].fill(self.sampler.sampling_top1_prob)
+        self.metrics["sampling_top1_bin"].fill(self.sampler.sampling_top1_bin)
+        self.metrics["sampling_effective_bin_count"].fill(self.sampler.sampling_effective_bin_count)
+        self.metrics["sampling_visited_bin_fraction"].fill(
+            self.sampler.sampling_visited_bin_fraction
+        )
+        self.metrics["sampling_failure_rate_mean"].fill(self.sampler.sampling_failure_rate_mean)
+        self.metrics["sampling_failure_rate_max"].fill(self.sampler.sampling_failure_rate_max)
+        self.metrics["sampling_failure_count_total"].fill(self.sampler.sampling_failure_count_total)
+        self.metrics["sampling_visit_count_total"].fill(self.sampler.sampling_visit_count_total)
+        self.metrics["sampling_uniform_mass_actual"].fill(self.sampler.sampling_uniform_mass_actual)
 
     def _numpy_metric(self, name: str) -> np.ndarray:
         value = self.metrics[name]
@@ -1083,12 +1082,16 @@ class MotionCommand(CommandTerm):
     ) -> tuple[dict[str, float], dict[str, np.ndarray]]:
         """Expose sampler summaries and distributions to off-policy loggers."""
         sampler = self.sampler
-        histograms = {
-            "sampling_failure_rate": sampler.bin_failure_rate.copy(),
-            "sampling_probability": sampler._sampling_probs.copy(),
-            "sampling_visit_count": sampler.bin_visit_count.copy(),
-            "sampling_failure_count": sampler.bin_failed_count.copy(),
-        } if include_histograms else {}
+        histograms = (
+            {
+                "sampling_failure_rate": sampler.bin_failure_rate.copy(),
+                "sampling_probability": sampler._sampling_probs.copy(),
+                "sampling_visit_count": sampler.bin_visit_count.copy(),
+                "sampling_failure_count": sampler.bin_failed_count.copy(),
+            }
+            if include_histograms
+            else {}
+        )
         return (
             {
                 "sampling_entropy": sampler.sampling_entropy,

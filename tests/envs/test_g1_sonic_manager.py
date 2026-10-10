@@ -5,6 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch as _torch
+
+
+def _actions(array):
+    """Wrap NumPy action arrays for the tensor-native TorchEnv contract."""
+    return _torch.as_tensor(array)
+
 import gymnasium as gym
 import numpy as np
 import pytest
@@ -88,6 +95,7 @@ def test_sonic_action_scale_is_scalar_by_default_and_release_rule_opt_in() -> No
     robot = SimpleNamespace(
         find_joints_by_actuator_names=lambda patterns: (ids, tuple(joints)),
         find_joints=lambda names, preserve_order=False: (ids, tuple(joints)),
+        num_joints=len(joints),
         data=SimpleNamespace(default_joint_pos=np.zeros((1, len(joints)), dtype=np.float32)),
     )
     env = SimpleNamespace(num_envs=1, scene={"robot": robot})
@@ -775,9 +783,10 @@ def test_sonic_manager_runtime_materializes_and_steps(monkeypatch, backend_type:
     }
     params["joint_position_range"] = [0.0, 0.0]
     params["joint_velocity_range"] = [0.0, 0.0]
-    # The training owner defaults to wrap mode (clip end resamples mid-episode);
-    # pin the per-clip truncation protocol here to keep validating the clip_end
-    # termination term and its termination-reason mask column.
+    # The training owner uses the upstream truncation protocol: a clip's end
+    # terminates the episode as a timeout and the reset samples a fresh motion.
+    # Pin it here so this test keeps validating the clip_end termination term
+    # and its termination-reason mask column regardless of owner drift.
     params["truncate_on_clip_end"] = True
     env_cfg_override["terminations"]["clip_end"] = {
         "_target_": "unilab.managers.TerminationTermCfg",
@@ -834,10 +843,10 @@ def test_sonic_manager_runtime_materializes_and_steps(monkeypatch, backend_type:
         # joint position, joint velocity, action, then gravity.
         np.testing.assert_allclose(state.obs["obs"][:, 30:59], expected_joint_obs)
         motion._undesired_contact_history[:] = True
-        env.reset(env_ids=np.asarray([0], dtype=np.int32))
+        env.reset(env_indices=_torch.tensor([0]))
         assert not motion._undesired_contact_history[0].any()
         assert motion._undesired_contact_history[1].all()
-        state = env.step(np.zeros((2, 29), dtype=np.float32))
+        state = env.step(_actions(np.zeros((2, 29), dtype=np.float32)))
         assert np.isfinite(state.obs["obs"]).all()
         assert state.info["termination_reason_names"] == SONIC_TERMINATION_REASON_NAMES
         assert SONIC_TERMINATION_REASON_NAMES[-2:] == ("time_out", "clip_end")
@@ -871,7 +880,7 @@ def test_sonic_manager_runtime_materializes_and_steps(monkeypatch, backend_type:
         # Reset randomization is clipped to the entity's soft joint limits,
         # matching the generic motion-tracking command contract.
         motion.cfg.reset_joint_position_range = (-100.0, 100.0)
-        env.reset(env_ids=np.asarray([0], dtype=np.int32))
+        env.reset(env_indices=_torch.tensor([0]))
         limits = np.asarray(env.scene["robot"].data.soft_joint_pos_limits)
         joint_pos = env.scene["robot"].data.joint_pos[0]
         np.testing.assert_array_less(limits[:, 0] - 1.0e-6, joint_pos)
@@ -912,7 +921,7 @@ def test_sonic_reference_terms_are_row_scoped_on_reset(monkeypatch, backend_type
     )
     try:
         env.init_state()
-        env.step(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32))
+        env.step(_actions(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32)))
         motion = env.command_manager.get_term("motion")
         term = env.observation_manager.get_term_cfg("policy", "g1_reference").func
         assert hasattr(term, "reset"), "g1_reference term must be a row-scoped class term"
@@ -982,7 +991,7 @@ def test_sonic_clip_subset_rotation_swaps_working_set(monkeypatch, backend_type:
         state = None
         states = []
         for _ in range(3):
-            state = env.step(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32))
+            state = env.step(_actions(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32)))
             states.append(state)
 
         assert motion._clip_rotations == 1
@@ -1106,7 +1115,7 @@ def test_sonic_reference_cache_matches_legacy_computation(monkeypatch, backend_t
             np.testing.assert_array_equal(smpl, legacy_packed)
 
         _compare()
-        env.step(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32))
+        env.step(_actions(np.zeros((env.num_envs,) + env.action_space.shape, dtype=np.float32)))
         _compare()
         assert state.obs["obs"].shape == (3, 2412)
     finally:
@@ -1168,7 +1177,7 @@ def test_sonic_transition_uses_current_frame_for_reward_and_next_frame_for_obser
             return original_compute(*args, **kwargs)
 
         monkeypatch.setattr(env.reward_manager, "compute", capture_reward)
-        state = env.step(np.zeros((1, 29), dtype=np.float32))
+        state = env.step(_actions(np.zeros((1, 29), dtype=np.float32)))
         assert sampled_frames == [0]
         np.testing.assert_array_equal(motion.sampler.current_frames, [1])
         # Synthetic joint_pos[frame, 0] == frame; g1 reference begins with
@@ -1203,6 +1212,8 @@ def test_sonic_manager_wrap_mode_continues_episode_past_clip_end(
         {
             "motion_store_file": "synthetic",
             "sampling_mode": "start",
+            # Wrap mode is no longer the training default; opt in explicitly.
+            "truncate_on_clip_end": False,
             "anchor_pos_z_threshold": 100.0,
             "anchor_ori_threshold": 100.0,
             "ee_body_pos_z_threshold": 100.0,
@@ -1216,6 +1227,7 @@ def test_sonic_manager_wrap_mode_continues_episode_past_clip_end(
         }
     )
     env_cfg_override["observations"]["policy"]["terms"]["obs"]["sonic_noise"] = {"level": 0.0}
+    env_cfg_override["terminations"]["clip_end"] = None
     env = registry.make(
         "G1SonicManager",
         sim_backend=backend_type,
@@ -1229,7 +1241,7 @@ def test_sonic_manager_wrap_mode_continues_episode_past_clip_end(
         assert "clip_end" not in env.termination_manager.active_terms
         num_frames = int(motion.loader.num_frames)
         for step in range(1, num_frames):
-            state = env.step(np.zeros((1, 29), dtype=np.float32))
+            state = env.step(_actions(np.zeros((1, 29), dtype=np.float32)))
             assert not state.terminated.any()
             assert not state.truncated.any()
             assert not motion.clip_end[0]
@@ -1237,7 +1249,7 @@ def test_sonic_manager_wrap_mode_continues_episode_past_clip_end(
         # The clip's final frame has now been current for one step; the next
         # advance wraps instead of truncating the episode.
         length_before_wrap = int(env.episode_length_buf[0])
-        state = env.step(np.zeros((1, 29), dtype=np.float32))
+        state = env.step(_actions(np.zeros((1, 29), dtype=np.float32)))
         assert not state.terminated.any()
         assert not state.truncated.any()
         assert not env.reset_buf[0]
@@ -1255,7 +1267,7 @@ def test_sonic_manager_wrap_mode_continues_episode_past_clip_end(
         assert env.episode_length_buf[0] == length_before_wrap + 1
         # The wrap flag clears on the following advance and the reference
         # keeps playing from the resampled frame.
-        state = env.step(np.zeros((1, 29), dtype=np.float32))
+        state = env.step(_actions(np.zeros((1, 29), dtype=np.float32)))
         assert not motion.clip_end[0]
         np.testing.assert_array_equal(motion.sampler.current_frames, [1])
         assert env.episode_length_buf[0] == length_before_wrap + 2

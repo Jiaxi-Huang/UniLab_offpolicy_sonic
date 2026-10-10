@@ -11,7 +11,7 @@ import abc
 import dataclasses
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from typing import TYPE_CHECKING, Any, Optional, cast
@@ -692,6 +692,9 @@ class TorchEnv(ABEnv):
         camera_kwargs: CameraCfg | Mapping[str, Any] | None = None,
         debug_overlay_getter: DebugOverlayGetter | None = None,
         on_frame: Callable[[int, np.ndarray], np.ndarray | None] | None = None,
+        extra_data_getter: Callable[[], np.ndarray | None] | None = None,
+        ghost_state_getter: Callable[[], np.ndarray | None] | None = None,
+        ghost_joint_names: Sequence[str] | None = None,
     ) -> str | None:
         """Execute playback through the concrete backend."""
         if on_frame is not None:
@@ -714,6 +717,9 @@ class TorchEnv(ABEnv):
                 frame_state_getter=frame_state_getter,
                 camera_kwargs=camera_kwargs,
                 debug_overlay_getter=debug_overlay_getter,
+                extra_data_getter=extra_data_getter,
+                ghost_state_getter=ghost_state_getter,
+                ghost_joint_names=ghost_joint_names,
             ),
         )
 

@@ -20,7 +20,7 @@ from unilab.envs import ManagerBasedRlEnv
 from unilab.tasks.motion_tracking.g1.sonic_manager import SonicJointPositionAction
 from unilab.training import create_env, ensure_registries
 from unilab.utils.device import get_default_device
-from unilab.utils.nan_guard import NanGuardCfg
+from unilab.training.tensor_diagnostics import NanGuardCfg
 from unilab.utils.seed import apply_training_seed
 
 if TYPE_CHECKING:

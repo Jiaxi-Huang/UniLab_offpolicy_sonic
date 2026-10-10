@@ -6,7 +6,6 @@ from dataclasses import replace
 
 import pytest
 import torch
-
 from uni_rl.algos.sonic import SonicBackbone, SonicModelConfig, load_sonic_checkpoint
 
 

@@ -13,17 +13,18 @@ from omegaconf import DictConfig
 
 ROOT_DIR = Path.cwd()
 
-from unilab.scripts.train_offpolicy import (
-    build_failure_summary,
-    build_run_dir_name,
-    enable_faulthandler,
-)
 from uni_rl.ipc.dp_launcher import (
     UNILAB_DP_LOG_DIR,
     DpRankSupervisor,
     current_dp_rank,
     resolve_dp_topology,
     validate_dp_launchable,
+)
+
+from unilab.scripts.train_offpolicy import (
+    build_failure_summary,
+    build_run_dir_name,
+    enable_faulthandler,
 )
 from unilab.training import (
     apply_configured_training_seed,
@@ -43,7 +44,7 @@ def run(cfg: DictConfig) -> None:
     enable_faulthandler()
     ensure_registries()
 
-    devices = resolve_dp_topology(cfg.training.devices)
+    devices = resolve_dp_topology(getattr(cfg.training, "devices", None))
     rank = current_dp_rank()
     rank_device = apply_rank_config(cfg)
     seed_info = apply_configured_training_seed(cfg, torch_runtime=True, cuda=True)
@@ -136,4 +137,6 @@ def run(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    hydra.main(version_base="1.3", config_path="../conf/flashsac", config_name="config_sonic")(run)()
+    hydra.main(version_base="1.3", config_path="../conf/flashsac", config_name="config_sonic")(
+        run
+    )()

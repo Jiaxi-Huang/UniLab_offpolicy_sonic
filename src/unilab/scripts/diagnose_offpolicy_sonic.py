@@ -7,11 +7,10 @@ from pathlib import Path
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
-
-
 from uni_rl.algos.sonic.config import SonicModelConfig
-from unilab.base.config_adapter import create_env
 from uni_rl.utils.observations import get_obs_dims
+
+from unilab.base.config_adapter import create_env
 from unilab.training import ensure_registries
 from unilab.training.offpolicy_sonic import _model_config
 

@@ -49,6 +49,7 @@ dependencies = [
     "mediapy",
     "tensorboard>=2.21.0",
     "setuptools",
+    "joblib",
     "rich",
     "tqdm",
     "typing-extensions",
@@ -130,6 +131,10 @@ explicit = true
 torch = [
     { index = "r2-cu130", marker = "sys_platform=='linux' or sys_platform=='win32'" },
 ]
+# The SONIC stack pins the fork's rebased sonic branches (reference-motion
+# conversion contract + SONIC off-policy support) until they land upstream.
+unisim-core = { git = "https://github.com/Jiaxi-Huang/unisim.git", branch = "sonic" }
+unilab-rl = { git = "https://github.com/Jiaxi-Huang/unilab_rl.git", branch = "sonic" }
 
 [tool.uv]
 exclude-dependencies = ["torchvision"]

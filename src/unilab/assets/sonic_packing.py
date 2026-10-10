@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from unilab.assets.sonic import sonic_clip_is_filtered
 from unilab.tasks.motion_tracking.g1.sonic_data import (
     _DEFAULT_REFERENCE_FRAMES,
     _SONIC_ROBOT_NPZ_FORMAT,
@@ -158,8 +159,15 @@ def pack_sonic_dataset(
     *,
     progress_interval: int = 1000,
     split_discontinuities: bool = False,
+    exclude_filtered: bool = True,
 ) -> dict[str, Any]:
-    """Build an atomic, versioned mmap store from paired SONIC NPZ clips."""
+    """Build an atomic, versioned mmap store from paired SONIC NPZ clips.
+
+    ``exclude_filtered`` drops clips whose name hits the upstream BONES-SEED
+    blacklist (see ``SONIC_FILTERED_CLIP_KEYWORDS``), keeping the packed store
+    aligned with the converted (already filtered) dataset even when it is
+    rebuilt from older unfiltered NPZ pairs.
+    """
 
     if progress_interval <= 0:
         raise ValueError("progress_interval must be positive")
@@ -173,6 +181,13 @@ def pack_sonic_dataset(
         robot_suffix=".npz",
         smpl_suffix=".npz",
     )
+    filtered_clips = [robot.stem for robot, _ in pairs if sonic_clip_is_filtered(robot.stem)]
+    if exclude_filtered and filtered_clips:
+        pairs = [pair for pair in pairs if not sonic_clip_is_filtered(pair[0].stem)]
+        print(
+            f"Excluding {len(filtered_clips)} blacklisted clips (upstream BONES-SEED filter)",
+            flush=True,
+        )
 
     clip_names: list[str] = []
     clip_lengths: list[int] = []
@@ -308,6 +323,11 @@ def pack_sonic_dataset(
                 "max_smpl_relative_root_step_deg": _MAX_SMPL_RELATIVE_ROOT_STEP_DEG,
                 "max_wrist_joint_step_rad": _MAX_WRIST_JOINT_STEP_RAD,
             },
+            "filter": {
+                "applied": bool(exclude_filtered and filtered_clips),
+                "filtered_clip_count": len(filtered_clips) if exclude_filtered else 0,
+                "filtered_clips": filtered_clips if exclude_filtered else [],
+            },
             "joint_names": list(joint_names),
             "body_names": list(body_names),
             "clip_lengths_file": "clip_lengths.npy",
@@ -332,6 +352,7 @@ def pack_sonic_dataset(
         "num_clips": len(clip_lengths),
         "num_frames": total_frames,
         "size_bytes": required_bytes,
+        "filtered_clip_count": len(filtered_clips) if exclude_filtered else 0,
     }
 
 
@@ -346,6 +367,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="split discontinuities as a diagnostic mode; SONIC-compatible packing keeps source clips",
     )
+    parser.add_argument(
+        "--include-filtered",
+        action="store_true",
+        help="keep clips matching the upstream BONES-SEED blacklist (default: exclude)",
+    )
     return parser.parse_args(argv)
 
 
@@ -358,6 +384,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.output,
             progress_interval=args.progress_interval,
             split_discontinuities=args.split_discontinuities,
+            exclude_filtered=not args.include_filtered,
         )
     except (FileNotFoundError, FileExistsError, OSError, RuntimeError, ValueError) as error:
         raise SystemExit(str(error)) from error

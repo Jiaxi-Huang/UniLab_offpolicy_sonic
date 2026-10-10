@@ -52,9 +52,11 @@ def test_sonic_model_profiles_compose() -> None:
         )
         assert int(runtime.actor_obs_dim) == 93 * int(model.num_future_frames)
         assert "critic_hidden_dim" in model
-    assert [item[1] for item in configs] == [1, 4, 10]
-    assert [item[2] for item in configs] == [93, 372, 930]
-    assert [item[3] for item in configs] == [128, 256, 512]
+    # LAFAN1 shares the release observation contract (10 future frames) and
+    # only differs in encoder/token capacity, per sonic_model/lafan.yaml.
+    assert [item[1] for item in configs] == [1, 10, 10]
+    assert [item[2] for item in configs] == [93, 930, 930]
+    assert [item[3] for item in configs] == [128, 512, 512]
 
 
 def test_sonic_lafan_training_defaults_are_update_aligned() -> None:
@@ -198,10 +200,10 @@ def test_sonic_owner_materializes_manager_contract(owner: str, backend: str) -> 
     assert tuple(command.params.joint_default_position_range) == (0.0, 0.0)
     assert isinstance(action, SonicJointPositionActionCfg)
     assert cfg.training.sim_backend == backend
-    # Wrap-mode training contract: a clip's end resamples the reference
-    # mid-episode instead of truncating it.
-    assert command.truncate_on_clip_end is False
-    assert env_cfg.terminations["clip_end"] is None
+    # Upstream gear_sonic training contract: a clip's end terminates the
+    # episode as a timeout and the reset samples a fresh motion.
+    assert command.truncate_on_clip_end is True
+    assert env_cfg.terminations["clip_end"].time_out is True
     assert command.anchor_pos_z_threshold == pytest.approx(0.15)
     assert command.low_reference_anchor_pos_z_threshold == pytest.approx(0.75)
     assert float(action.scale) == pytest.approx(2.0)
@@ -295,6 +297,6 @@ def test_sonic_backends_keep_policy_contract_equal() -> None:
         assert motion.num_future_frames == 10
         assert motion.sampling_mode == "adaptive"
         assert motion.adaptive_attribution == "trajectory"
-        assert motion.truncate_on_clip_end is False
+        assert motion.truncate_on_clip_end is True
         assert motion.anchor_pos_z_threshold == pytest.approx(0.15)
         assert motion.low_reference_anchor_pos_z_threshold == pytest.approx(0.75)

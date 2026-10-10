@@ -122,7 +122,12 @@ env:
         # single hard clip cannot monopolize training once attribution
         # differentiates bins.
         adaptive_max_prob_per_motion: 30
-        truncate_on_clip_end: false
+        # Upstream gear_sonic semantics: when a motion reaches its final frame
+        # the episode ends as a timeout (not a failure) and the reset samples a
+        # fresh motion. Wrap mode (false) instead teleports the robot onto a new
+        # reference mid-episode, which leaves cross-clip transitions in the
+        # off-policy replay buffer.
+        truncate_on_clip_end: true
         encoder_sampling: mixed
         anchor_pos_z_threshold: 0.15
         anchor_ori_threshold: 0.2
@@ -220,8 +225,11 @@ env:
     ee_body_pos_z: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_ee_body_pos_z_termination}
     feet_pos: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_feet_pos_termination}
     time_out: {_target_: unilab.managers.TerminationTermCfg, func: unilab.envs.mdp.time_out, time_out: true}
-    #clip_end: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_clip_end, time_out: true}
-    clip_end: null
+    # Upstream gear_sonic semantics: reaching the motion's final frame ends the
+    # episode as a timeout (no failure attribution, replay bootstraps across it)
+    # and the reset samples a fresh motion. Keep this in sync with
+    # truncate_on_clip_end above.
+    clip_end: {_target_: unilab.managers.TerminationTermCfg, func: unilab.tasks.motion_tracking.g1.sonic_manager.sonic_clip_end, time_out: true}
   policy_observation_group: policy
   critic_observation_group: critic
   scale_rewards_by_dt: true

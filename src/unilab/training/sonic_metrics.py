@@ -198,8 +198,8 @@ def _build_session(cfg: DictConfig, configured_checkpoint: str) -> _PlaybackSess
         num_envs=int(session_cfg.training.play_env_num),
         env_cfg_override=env_override,
     )
-    if not isinstance(env, NpEnv):
-        raise TypeError("SONIC metric benchmark requires the NumPy environment contract")
+    if not isinstance(env, NpEnv) and not hasattr(env, "command_manager"):
+        raise TypeError("SONIC metric benchmark requires a Manager runtime with commands")
     motion = env.command_manager.get_term("motion")
     if not isinstance(motion, SonicMotionCommand):
         raise TypeError("SONIC metric benchmark requires SonicMotionCommand")
@@ -217,8 +217,8 @@ def _build_session(cfg: DictConfig, configured_checkpoint: str) -> _PlaybackSess
     if not isinstance(action_space, Box) or action_space.shape is None:
         raise TypeError("SONIC metric benchmark requires a continuous Box action space")
     action_dim = int(action_space.shape[0])
-    devices = resolve_dp_topology(session_cfg.training.devices)
-    device = default_device(torch, resolve_dp_rank_device(devices, current_dp_rank()))
+    devices = resolve_dp_topology(getattr(session_cfg.training, "devices", None))
+    device = default_device(torch, resolve_dp_rank_device(current_dp_rank()))
     actor = build_play_actor(
         session_cfg,
         checkpoint,
@@ -326,7 +326,7 @@ def evaluate_sonic_checkpoint(
                     live = ~completed
                     if not np.any(live):
                         break
-                    state = env.step(_actions(session, obs))
+                    state = env.step(torch.as_tensor(_actions(session, obs)))
                     predicted, reference = motion.tracking_body_positions()
                     # The official callback discards the first/reset frame and
                     # retains exactly ``clip_frames - 1`` post-step samples.

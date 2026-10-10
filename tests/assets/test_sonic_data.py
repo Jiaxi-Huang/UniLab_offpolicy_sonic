@@ -13,10 +13,12 @@ from scripts.motion import pull_sonic_data
 
 from unilab.assets import sonic
 from unilab.assets.sonic import (
+    SONIC_FILTERED_CLIP_KEYWORDS,
     SonicDataPaths,
     SonicDataSourceConfig,
     _extract_gzip_tar,
     download_sonic_training_data,
+    sonic_clip_is_filtered,
 )
 from unilab.tasks.motion_tracking.g1.sonic_data import _pack_smpl_reference, _rotation_6d
 
@@ -32,6 +34,20 @@ def test_smpl_reference_uses_checkpoint_layout() -> None:
     expected_human = np.concatenate((human_local, _rotation_6d(root)), axis=-1)
     assert np.array_equal(packed[:, :780], expected_human.reshape(2, 780))
     assert np.array_equal(packed[:, 780:], wrist.reshape(2, 60))
+
+
+def test_clip_filter_matches_upstream_blacklist_semantics() -> None:
+    assert SONIC_FILTERED_CLIP_KEYWORDS  # the upstream list must stay non-empty
+    # Case-insensitive substring on the clip stem, mirroring the upstream
+    # filename filter (real hit classes observed in the packed store).
+    assert sonic_clip_is_filtered("sit_croos_legged_loop_002__A021")
+    assert sonic_clip_is_filtered("sit_croos_legged_loop_002__A021_M")
+    assert sonic_clip_is_filtered("jump_on_box_230cm_001__A304")
+    assert sonic_clip_is_filtered("Turn_Start_Walk_stair_case_001__A017")
+    # Regular trackable clips stay in the dataset.
+    assert not sonic_clip_is_filtered("Idle_Left_001__A017")
+    assert not sonic_clip_is_filtered("zoidberg_scuttle_R_001__A531_M")
+    assert not sonic_clip_is_filtered("warm_up_arms_002__A361")
 
 
 def _tar_bytes(files: dict[str, bytes], *, mode: str = "w") -> bytes:

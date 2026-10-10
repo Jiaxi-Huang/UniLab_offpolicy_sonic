@@ -11,11 +11,6 @@ import numpy as np
 import torch
 from gymnasium.spaces import Box
 from omegaconf import DictConfig, OmegaConf
-
-from uni_rl.offpolicy.thread_budget import (
-    apply_torch_thread_runtime,
-    resolve_torch_thread_runtime,
-)
 from uni_rl.algos.sonic import (
     SonicAuxLossConfig,
     SonicModelConfig,
@@ -29,9 +24,6 @@ from uni_rl.algos.sonic.flashsac import (
     SonicFlashSACActor,
     SonicReleasePPOActor,
 )
-from unisim.backend.base import log_playback_plan
-from unilab.base.config_adapter import create_env
-from unilab.base.np_env import NpEnv
 from uni_rl.ipc.dp_launcher import (
     apply_dp_rank_config,
     current_dp_rank,
@@ -40,8 +32,16 @@ from uni_rl.ipc.dp_launcher import (
     resolve_dp_rendezvous_path,
     resolve_dp_topology,
 )
+from uni_rl.offpolicy.thread_budget import (
+    apply_torch_thread_runtime,
+    resolve_torch_thread_runtime,
+)
+from unisim.backend.base import log_playback_plan
+
+from unilab.base.config_adapter import create_env
+from unilab.base.np_env import NpEnv
 from unilab.utils.checkpoint import resolve_offpolicy_checkpoint_path
-from unilab.utils.nan_guard import NanGuardCfg
+from unilab.training.tensor_diagnostics import NanGuardCfg
 from unilab.utils.sim2sim import policy_load_dim_guard, resolve_sim2sim_config
 from unilab.visualization.interactive_playback import (
     build_offpolicy_env_cfg_override,
@@ -95,12 +95,12 @@ def build_runner(algo_name: str, cfg: DictConfig, log_dir: str | None = None):
         "sonic_release_play=0.25 x effort_limit/stiffness + released actuator gains"
     )
     env_cfg_override = build_offpolicy_env_cfg_override(algo_name, cfg, root_dir=ROOT_DIR)
-    dp_devices = resolve_dp_topology(cfg.training.devices)
+    dp_devices = resolve_dp_topology(getattr(cfg.training, "devices", None))
     dp_world_size = len(dp_devices) if dp_devices is not None else 1
     dp_rank = current_dp_rank()
     from unilab.utils.device import get_default_device
 
-    rank_device = resolve_dp_rank_device(dp_devices, dp_rank) or get_default_device()
+    rank_device = resolve_dp_rank_device(dp_rank) or get_default_device()
     host_cpu_count = os.cpu_count() or 1
     explicit_cpu_ids = getattr(cfg.training, "dp_collector_cpu_ids", None)
     if explicit_cpu_ids is not None:
@@ -378,16 +378,16 @@ def play_offpolicy(
         env_cfg_override,
         checkpoint_format=checkpoint_format,
     )
-    devices = resolve_dp_topology(cfg.training.devices)
-    device = default_device(torch, resolve_dp_rank_device(devices, current_dp_rank()))
+    devices = resolve_dp_topology(getattr(cfg.training, "devices", None))
+    device = default_device(torch, resolve_dp_rank_device(current_dp_rank()))
     print(f"Using device for play: {device}")
     env = create_env(
         cfg,
         num_envs=cfg.training.play_env_num,
         env_cfg_override=env_cfg_override,
     )
-    if not isinstance(env, NpEnv):
-        raise TypeError("SONIC playback requires the NumPy environment contract")
+    if not isinstance(env, NpEnv) and not hasattr(env, "command_manager"):
+        raise TypeError("SONIC playback requires a Manager runtime with commands")
     obs_dim, _critic_obs_dim = resolve_play_obs_dims(env.obs_groups_spec)
     action_space = env.action_space
     if not isinstance(action_space, Box):
@@ -449,7 +449,9 @@ def play_offpolicy(
         stats = PlaybackStats(env, output_path=stats_output)
 
     def initialize() -> np.ndarray:
-        observations, _info = env.reset(np.arange(cfg.training.play_env_num, dtype=np.int32))
+        observations, _info = env.reset(
+            torch.arange(cfg.training.play_env_num, dtype=torch.int64)
+        )
         return np.asarray(observations["obs"], dtype=np.float32)
 
     def step(obs_np: np.ndarray) -> np.ndarray:
@@ -465,7 +467,7 @@ def play_offpolicy(
             .cpu()
             .numpy()
         )
-        state = env.step(actions)
+        state = env.step(torch.as_tensor(actions))
         if stats is not None:
             stats.observe(state)
         return np.asarray(state.obs["obs"], dtype=np.float32)
@@ -507,8 +509,11 @@ def play_offpolicy(
 def apply_rank_config(cfg: DictConfig) -> str | None:
     """Expose the same DP rank configuration helper for focused tests."""
 
-    devices = resolve_dp_topology(cfg.training.devices)
-    return apply_dp_rank_config(cfg, devices, current_dp_rank())
+    # The upstream launcher dropped the devices-list argument: rank-local
+    # CUDA visibility replaces explicit topology (resolve_dp_topology stays a
+    # downstream compat shim for single-process runs).
+    resolve_dp_topology(getattr(cfg.training, "devices", None))
+    return apply_dp_rank_config(cfg, current_dp_rank())
 
 
 __all__ = [

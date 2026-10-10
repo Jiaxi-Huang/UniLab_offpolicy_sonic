@@ -38,6 +38,66 @@ class SonicDataSourceConfig:
             )
 
 
+# Substring keywords marking a BONES-SEED clip as untrackable for G1
+# motion tracking (furniture/vehicle/acrobatics sources such as sitting,
+# climbing, or handstand motions). Verbatim from the upstream gear_sonic
+# recipe (``filter_and_copy_bones_data.py`` default ``--filter-keywords``)
+# so conversion and packing drop the same clips the upstream training data
+# excludes.
+SONIC_FILTERED_CLIP_KEYWORDS: tuple[str, ...] = (
+    "bed",
+    "bike",
+    "chair",
+    "climb",
+    "com_up_50cm",
+    "sitting",
+    "step_on",
+    "seat",
+    "table",
+    "_sit_",
+    "sit_",
+    "ladder",
+    "crutch",
+    "_bed_",
+    "_ride_",
+    "scooter",
+    "stepdown",
+    "acrobatics_",
+    "box_HSPU",
+    "cartwheel",
+    "50cm_box_",
+    "on_box",
+    "fall_from",
+    "handstand_ff_",
+    "on_1m",
+    "form_box",
+    "off_1m",
+    "230m",
+    "jump_over_obstacle_",
+    "lift_crate_come_up_",
+    "jump_to_shoulder_roll",
+    "kozak_dance",
+    "stair",
+    "handstand",
+    "box_jump",
+    "monkey_jump",
+    "safety_roll",
+    "box_dips",
+    "walking_on_edge",
+    "push_obstacle",
+)
+
+
+def sonic_clip_is_filtered(clip_name: str) -> bool:
+    """Return True when a clip name hits the upstream BONES-SEED blacklist.
+
+    Matching is a case-insensitive substring test on the clip stem, mirroring
+    the upstream filename filter.
+    """
+    lowered = clip_name.lower()
+    return any(keyword in lowered for keyword in SONIC_FILTERED_CLIP_KEYWORDS)
+
+
 @dataclass(frozen=True)
 class SonicDataPaths:
     """Materialized raw G1 CSV and SMPL PKL source paths."""
