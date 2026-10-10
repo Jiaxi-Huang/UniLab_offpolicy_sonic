@@ -176,14 +176,8 @@ def build_sonic_flashsac_runner(
         amp_dtype=cfg.algo.algo_params.amp_dtype,
         use_compile=bool(cfg.algo.algo_params.use_compile),
         compile_full_objectives=bool(cfg.algo.algo_params.compile_full_objectives),
-        use_cuda_graph_critic=cfg.algo.algo_params.use_cuda_graph_critic,
-        use_cuda_graph_actor=cfg.algo.algo_params.use_cuda_graph_actor,
-        use_cuda_graph_critic_packed_staging=(
-            cfg.algo.algo_params.use_cuda_graph_critic_packed_staging
-        ),
-        use_cuda_graph_actor_packed_staging=(
-            cfg.algo.algo_params.use_cuda_graph_actor_packed_staging
-        ),
+        # The manual CUDA-graph learner options were removed upstream; the
+        # config knobs stay accepted but no longer forward into the learner.
         pretrained_checkpoint=OmegaConf.select(cfg, "algo.sonic.finetune_checkpoint", default=None),
         freeze_sonic_backbone=bool(
             OmegaConf.select(cfg, "algo.sonic.freeze_backbone", default=False)
