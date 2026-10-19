@@ -124,3 +124,10 @@ APPO_HARDWARE_TIMING_ANALYSIS.md
 
 # Training log artifacts (checkpoints, ONNX exports)
 log/
+
+# SONIC training-data, log, and benchmark-artifact roots (never tracked).
+# Benchmark outputs (metrics json/mp4 galleries) are regenerated on demand.
+data/
+logs/
+benchmarks/
+output_report/

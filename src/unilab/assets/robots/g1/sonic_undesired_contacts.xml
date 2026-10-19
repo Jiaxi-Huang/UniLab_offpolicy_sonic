@@ -1,0 +1,37 @@
+<mujoco model="g1 sonic undesired contacts">
+  <!--
+    SONIC excludes ankle-roll, wrist-yaw, and elbow bodies from this penalty.
+    Each remaining collision geom is paired with the task floor.  MuJoCo reads
+    the force sensors with the upstream strict 1 N threshold; Motrix reads the
+    found sensors as the accepted contact-presence approximation.
+  -->
+  <sensor>
+    <contact name="sonic_undesired_force_pelvis_collision" geom1="floor" geom2="pelvis_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_left_hip_collision" geom1="floor" geom2="left_hip_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_left_thigh_collision" geom1="floor" geom2="left_thigh_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_left_shin_collision" geom1="floor" geom2="left_shin_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_left_linkage_brace_collision" geom1="floor" geom2="left_linkage_brace_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_right_hip_collision" geom1="floor" geom2="right_hip_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_right_thigh_collision" geom1="floor" geom2="right_thigh_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_right_shin_collision" geom1="floor" geom2="right_shin_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_right_linkage_brace_collision" geom1="floor" geom2="right_linkage_brace_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_torso_collision" geom1="floor" geom2="torso_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_head_collision" geom1="floor" geom2="head_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_left_shoulder_yaw_collision" geom1="floor" geom2="left_shoulder_yaw_collision" data="force" num="1" reduce="maxforce"/>
+    <contact name="sonic_undesired_force_right_shoulder_yaw_collision" geom1="floor" geom2="right_shoulder_yaw_collision" data="force" num="1" reduce="maxforce"/>
+
+    <contact name="sonic_undesired_found_pelvis_collision" geom1="floor" geom2="pelvis_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_left_hip_collision" geom1="floor" geom2="left_hip_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_left_thigh_collision" geom1="floor" geom2="left_thigh_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_left_shin_collision" geom1="floor" geom2="left_shin_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_left_linkage_brace_collision" geom1="floor" geom2="left_linkage_brace_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_right_hip_collision" geom1="floor" geom2="right_hip_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_right_thigh_collision" geom1="floor" geom2="right_thigh_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_right_shin_collision" geom1="floor" geom2="right_shin_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_right_linkage_brace_collision" geom1="floor" geom2="right_linkage_brace_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_torso_collision" geom1="floor" geom2="torso_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_head_collision" geom1="floor" geom2="head_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_left_shoulder_yaw_collision" geom1="floor" geom2="left_shoulder_yaw_collision" data="found" num="1" reduce="mindist"/>
+    <contact name="sonic_undesired_found_right_shoulder_yaw_collision" geom1="floor" geom2="right_shoulder_yaw_collision" data="found" num="1" reduce="mindist"/>
+  </sensor>
+</mujoco>

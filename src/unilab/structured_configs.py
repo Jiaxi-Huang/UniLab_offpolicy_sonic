@@ -51,6 +51,11 @@ class SACConfig(BaseConfig):
     critic_lr: float = 3e-4
     actor_hidden_dim: int = 512
     critic_hidden_dim: int = 768
+    use_layer_norm: bool = False
+    # Optional per-block trunk widths, e.g. [1024, 1024, 1024, 1024]; None
+    # keeps the uniform hidden_dim x num_blocks layout.
+    actor_hidden_dims: Optional[list] = None
+    critic_hidden_dims: Optional[list] = None
     num_atoms: int = 101
     obs_normalization: bool = False
     use_layer_norm: bool = True
@@ -108,7 +113,6 @@ class FlashSACConfig(BaseConfig):
     critic_hidden_dim: int = 256
     num_atoms: int = 101
     obs_normalization: bool = False
-    use_layer_norm: bool = False
     algo_params: FlashSACAlgoParams = field(default_factory=FlashSACAlgoParams)
 
 

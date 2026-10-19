@@ -12,6 +12,7 @@ algo:
   resume: false
   seed: 1
   num_envs: 1024
+  use_layer_norm: false
   batch_size: 2048
   replay_buffer_n: 512
   updates_per_step: 2
@@ -28,9 +29,12 @@ algo:
   critic_lr: 3.0e-4
   actor_hidden_dim: 128
   critic_hidden_dim: 256
+  # Optional per-block trunk widths (e.g. [1024, 1024, 1024, 1024]); null
+  # keeps the uniform hidden_dim x num_blocks layout.
+  actor_hidden_dims: null
+  critic_hidden_dims: null
   num_atoms: 101
   obs_normalization: false
-  use_layer_norm: false
   algo_params:
     normalize_reward: true
     normalized_g_max: 5.0

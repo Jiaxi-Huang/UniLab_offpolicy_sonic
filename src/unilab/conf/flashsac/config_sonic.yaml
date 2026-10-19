@@ -1,0 +1,18 @@
+# SONIC owns its model/task defaults while inheriting the unchanged off-policy base.
+defaults:
+  - config
+  - sonic_model: release
+  - override task: g1_sonic/mujoco
+  - _self_
+
+training:
+  play_stats_output: null
+  # Play may run continuously across the training episode time limit. This is
+  # applied only when constructing the play env; training keeps the task-owned
+  # max_episode_seconds (10 seconds for G1Sonic).
+  play_max_episode_seconds: null
+
+algo:
+  sonic:
+    finetune_checkpoint: null
+    freeze_backbone: false

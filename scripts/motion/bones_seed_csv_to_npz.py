@@ -183,13 +183,23 @@ def convert(args: argparse.Namespace) -> None:
             input_fps=input_fps,
             output_fps=output_fps,
         )
+        # Upstream ``compute_tracking_fk`` writes ``base_ang_vels`` straight
+        # into the body-local free-joint ``qvel[3:6]`` slot; the interpolated
+        # motion carries world-frame angular velocities, so rotate first.
+        from unilab.base.rotation import np_quat_apply_inverse_batched
+
+        quat64 = np.asarray(motion.base_rots, dtype=np.float64)
+        quat64 = quat64 / np.maximum(np.linalg.norm(quat64, axis=-1, keepdims=True), 1e-12)
+        base_ang_vels_local = np_quat_apply_inverse_batched(
+            quat64, np.asarray(motion.base_ang_vels, dtype=np.float64)
+        ).astype(np.float32)
         arrays = compute_tracking_fk(
             model_file,
             joint_names=joint_names,
             base_poss=motion.base_poss,
             base_rots=motion.base_rots,
             base_lin_vels=motion.base_lin_vels,
-            base_ang_vels=motion.base_ang_vels,
+            base_ang_vels=base_ang_vels_local,
             dof_poss=motion.dof_poss,
             dof_vels=motion.dof_vels,
             progress=True,

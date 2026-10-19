@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - /task/g1_sonic/base
+  - _self_
+
+training:
+  sim_backend: motrix
+env:
+  events:
+    base_mass: null
+    base_com: null
+    encoder_bias: null

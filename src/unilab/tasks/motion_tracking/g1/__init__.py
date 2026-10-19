@@ -3,6 +3,10 @@
 from unilab.base import registry
 from unilab.envs import ManagerBasedRlEnvCfg, make_manager_based_rl_env
 
+# Importing the SONIC manager module registers the ``G1SonicManager`` task
+# (env config + mujoco/motrix factories); the registration lives there.
+from .sonic_manager import G1SonicManagerCfg, G1SonicManagerEnv
+
 G1_MOTION_TASKS = ("G1MotionTracking",)
 
 for _task_name in G1_MOTION_TASKS:

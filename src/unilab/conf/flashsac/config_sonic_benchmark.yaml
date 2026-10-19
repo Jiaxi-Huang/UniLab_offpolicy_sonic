@@ -1,0 +1,19 @@
+# Deterministic clip-paired SONIC benchmark.
+defaults:
+  - config_sonic
+  - _self_
+  - sonic_benchmark_dataset: lafan1
+  - override task: g1_sonic/mujoco_play
+
+training:
+  export_onnx: false
+  play_env_num: 128
+  sim2sim_strict: false
+
+benchmark:
+  dataset: null
+  release_checkpoint: null
+  trained_checkpoint: null
+  max_clips: null
+  include_clip_metrics: true
+  output: benchmarks/sonic_metrics.json

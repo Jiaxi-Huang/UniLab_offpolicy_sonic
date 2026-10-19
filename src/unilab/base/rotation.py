@@ -228,6 +228,15 @@ def np_quat_apply(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     return rotated
 
 
+def np_quat_conjugate_batched(q: np.ndarray) -> np.ndarray:
+    """Conjugate quaternions with shape (..., 4), w-first."""
+    if q.shape[-1] != 4:
+        raise ValueError(f"Expected quaternion last dimension 4, got {q.shape}")
+    conj = np.array(q, copy=True)
+    conj[..., 1:] *= -1
+    return conj
+
+
 def np_quat_apply_batched(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Rotate broadcast-compatible vector arrays by quaternions.
 
@@ -358,6 +367,27 @@ def np_quat_from_euler_xyz(roll: np.ndarray, pitch: np.ndarray, yaw: np.ndarray)
 
     result = np.stack([w, x, y, z], axis=1)
     return result[0] if squeeze else result
+
+
+def np_quat_heading(q: np.ndarray, eps: float = 1.0e-9) -> np.ndarray:
+    """Extract a heading quaternion by zeroing roll and pitch.
+
+    This matches SONIC/gear's ``get_heading_q`` contract: retain only the
+    quaternion's ``w`` and ``z`` components, then normalize the result.  The
+    helper accepts any leading shape and never mutates the input.
+    """
+    q = np.asarray(q)
+    if q.shape[-1] != 4:
+        raise ValueError(f"Expected quaternion last dimension 4, got {q.shape}")
+    if eps <= 0.0 or not np.isfinite(eps):
+        raise ValueError(f"eps must be positive and finite, got {eps}")
+
+    heading = np.zeros_like(q)
+    heading[..., 0] = q[..., 0]
+    heading[..., 3] = q[..., 3]
+    norm = np.linalg.norm(heading, axis=-1, keepdims=True)
+    np.divide(heading, np.maximum(norm, eps), out=heading)
+    return heading
 
 
 def np_matrix_from_quat(q: np.ndarray) -> np.ndarray:
